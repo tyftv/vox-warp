@@ -701,7 +701,7 @@ void VoxEditor::Root::paint (juce::Graphics& g)
             g.setColour (modCol[ed.linkMode]); g.setFont (bold (11.0f));
             g.drawText ("LINKING MOD " + juce::String::charToString ((juce::juce_wchar) ('A' + ed.linkMode)) + ": TAP A KNOB TO CONNECT, DRAG TO SET DEPTH", 652, 12, 350, 18, juce::Justification::centredRight);
         }
-        else { g.setColour (juce::Colour (0xff2c3e5c)); g.setFont (mono (8.5f)); g.drawText (U8 ("TELL YOUR FRIENDS \xc2\xb7 v1.0"), 860, 13, 230, 16, juce::Justification::centredRight); }
+        else { g.setColour (juce::Colour (0xff2c3e5c)); g.setFont (mono (8.5f)); g.drawText (U8 ("TELL YOUR FRIENDS \xc2\xb7 v1.0 build ") + juce::String (VOXWARP_BUILD), 860, 13, 230, 16, juce::Justification::centredRight); }
     }
     // pods
     auto pod = [&] (juce::Rectangle<int> ri, const juce::String& title, const juce::String& sub, juce::Colour c)

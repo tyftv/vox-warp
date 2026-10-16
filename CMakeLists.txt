@@ -36,7 +36,9 @@ juce_add_binary_data(VoxWarpData SOURCES Resources/Michroma.ttf Resources/Chakra
 
 target_sources(VoxWarp PRIVATE Source/PluginProcessor.cpp Source/PluginEditor.cpp)
 target_include_directories(VoxWarp PRIVATE Source)
+set(VOXWARP_BUILD "dev" CACHE STRING "build number shown in the UI")
 target_compile_definitions(VoxWarp PUBLIC
+  VOXWARP_BUILD="${VOXWARP_BUILD}"
   JUCE_WEB_BROWSER=0
   JUCE_USE_CURL=0
   JUCE_VST3_CAN_REPLACE_VST2=0
@@ -48,6 +50,6 @@ target_link_libraries(VoxWarp
 if(VOXWARP_TESTS)
   juce_add_console_app(VoxWarpTest PRODUCT_NAME "VoxWarpTest")
   target_sources(VoxWarpTest PRIVATE test/TestMain.cpp Source/PluginProcessor.cpp Source/PluginEditor.cpp)
-  target_compile_definitions(VoxWarpTest PRIVATE VW_DEBUG=1 JucePlugin_Name="Vox Warp" JucePlugin_Build_VST3=0 JUCE_STANDALONE_APPLICATION=1 JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+  target_compile_definitions(VoxWarpTest PRIVATE VOXWARP_BUILD="test" VW_DEBUG=1 JucePlugin_Name="Vox Warp" JucePlugin_Build_VST3=0 JUCE_STANDALONE_APPLICATION=1 JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
   target_link_libraries(VoxWarpTest PRIVATE VoxWarpData juce::juce_audio_utils juce::juce_dsp juce::juce_audio_processors)
 endif()

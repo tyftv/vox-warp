@@ -146,7 +146,7 @@ public:
             {
                 const int i = py0 * G + px0; const float d = std::min (dist[(size_t) i], 1e5f);
                 if (d <= 0) { hgt[(size_t) i] = 0; continue; }
-                const float dd = std::min (d, Dm), hh = std::sqrt (dd * (2 * Dm - dd));
+                const float dd = std::min (d, Dm), k1 = 1 - dd / Dm, hh = Dm * (1 - k1 * k1);
                 const float u = (px0 + 0.5f) / G * 2 - 1, r = std::sqrt (u * u + w * w);
                 const float rip = std::sin (u * 11 + time * 2.3f) * std::sin (w * 9 - time * 1.9f) * 0.6f
                                 + std::sin ((u * 0.7f - w) * 17 + time * 3.1f) * 0.3f
@@ -179,7 +179,7 @@ public:
                 {
                     const float fx = (field[(size_t) i + 1] - field[(size_t) i - 1]) * 0.5f, fy = (field[(size_t) (i + G)] - field[(size_t) (i - G)]) * 0.5f;
                     const float gm = std::max (1e-4f, std::sqrt (fx * fx + fy * fy));
-                    a = juce::jlimit (0.0f, 1.0f, (v - T) / gm * 0.9f + 0.5f);
+                    a = juce::jlimit (0.0f, 1.0f, (v - T) / gm * 0.55f + 0.5f);
                 }
                 if (a <= 0.0f) { bd.setPixelColour (px0, py0, juce::Colours::transparentBlack); continue; }
 
@@ -193,7 +193,7 @@ public:
                     const float fx = field[(size_t) std::min (i + 1, G * G - 1)] - field[(size_t) std::max (i - 1, 0)];
                     const float fy = field[(size_t) std::min (i + G, G * G - 1)] - field[(size_t) std::max (i - G, 0)];
                     const float gm = std::max (1e-4f, std::sqrt (fx * fx + fy * fy));
-                    nx += -fx / gm * edge * 1.2f; ny += -fy / gm * edge * 1.2f;
+                    juce::ignoreUnused (fx, fy, gm);
                 }
                 float nz = 1; { const float nl = 1 / std::sqrt (nx * nx + ny * ny + nz * nz); nx *= nl; ny *= nl; nz *= nl; }
 
@@ -215,7 +215,7 @@ public:
                     const float box2 = sstep (0.1f, 0.03f, std::abs (az + 0.58f)) * sstep (0.1f, 0.4f, e) * 0.55f;
                     cr += box1 + box2; cg += box1 + box2; cb += box1 + box2;
                     const float back = sstep (-0.15f, -0.65f, rz);                                // rays heading away: dark dome
-                    cr += (0.02f + hueR * 0.12f - cr) * back; cg += (0.03f + hueG * 0.12f - cg) * back; cb += (0.06f + hueB * 0.18f - cb) * back;
+                    juce::ignoreUnused (back);
                 }
                 // metal tint + specular glints + soft coloured back-rim
                 auto spec = [&] (float lx, float ly, float lz)
@@ -226,8 +226,9 @@ public:
                     return d64 * d64 * 1.4f + d32 * 0.18f;
                 };
                 const float s1 = spec (L1x, L1y, L1z), s2 = spec (L2x, L2y, L2z) * 0.45f;
-                const float rim = std::pow (1 - nz, 3.0f) * 0.35f;
-                float r = cr * 0.94f + s1 + s2 + rim * hue2R, g = cg * 0.95f + s1 + s2 + rim * hue2G, b = cb + s1 + s2 + rim * hue2B;
+                const float rim = 0.0f;
+                const float vol = 0.8f + 0.2f * sstep (0.0f, Dm * 0.55f, std::min (dist[(size_t) i], Dm));   // broad, soft body shading
+                float r = cr * 0.94f * vol + s1 + s2 + rim * hue2R, g = cg * 0.95f * vol + s1 + s2 + rim * hue2G, b = cb * vol + s1 + s2 + rim * hue2B;
                 if (lv) { r = std::round (r / q) * q; g = std::round (g / q) * q; b = std::round (b / q) * q; }
                 bd.setPixelColour (px0, py0, juce::Colour::fromFloatRGBA (std::min (r, 1.0f), std::min (g, 1.0f), std::min (b, 1.0f), a));
             }

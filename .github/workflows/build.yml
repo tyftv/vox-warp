@@ -15,7 +15,7 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Configure
-        run: cmake -B build -A x64
+        run: cmake -B build -A x64 -DVOXWARP_BUILD=${{ github.run_number }}
 
       - name: Build
         run: cmake --build build --config Release --target VoxWarp_VST3 --parallel
