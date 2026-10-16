@@ -4,6 +4,10 @@
 #include "Engine.h"
 #include "Params.h"
 
+// One keyframe of a mod envelope. curve bends the segment from this point to the next (-1..1, 0 = straight).
+struct ModPt { float x = 0, y = 0, curve = 0; };
+static constexpr int kShapeRes = 256;
+
 struct ModLink { std::atomic<int> slot { -1 }, param { -1 }; std::atomic<float> depth { 0 }; };
 
 struct Preset { juce::String name; std::vector<std::pair<juce::String, float>> values; int scale; std::vector<std::tuple<int, juce::String, float>> links; };
@@ -42,7 +46,7 @@ public:
     juce::AudioParameterChoice *keyParam = nullptr, *scaleParam = nullptr;
     std::array<juce::AudioParameterChoice*, 3> modeParams {};
 
-    std::array<std::array<std::atomic<float>, 64>, 3> shapes;
+    std::array<std::array<std::atomic<float>, kShapeRes>, 3> shapes;   // rasterised envelope, read by the audio thread
     std::array<ModLink, 32> links;
     std::array<std::atomic<float>, 32> effNorm;              // modulated knob values (for ghost dots)
     std::array<std::atomic<float>, 3> modVal, modPhase, modEnv;
@@ -65,6 +69,10 @@ public:
     void setLink (int slot, int param, float depth);
     void removeLink (int slot, int param);
     void shapeFill (int slot, const juce::String& kind);
+    // keyframes (message thread); setPoints re-rasterises the table the audio thread reads
+    std::vector<ModPt> getPoints (int slot) const;
+    void setPoints (int slot, std::vector<ModPt> pts);
+    static float curveShape (float t, float c);
 
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
@@ -76,5 +84,7 @@ private:
     std::array<ModState, 3> ms;
     juce::SmoothedValue<float> outGain, mixS;
     int currentPreset = 0;
+    std::array<std::vector<ModPt>, 3> points;
+    juce::CriticalSection pointsLock;
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (VoxProcessor)
 };

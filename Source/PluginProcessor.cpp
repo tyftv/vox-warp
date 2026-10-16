@@ -32,7 +32,7 @@ VoxProcessor::VoxProcessor()
     for (int i = 0; i < 3; ++i) modeParams[(size_t) i] = dynamic_cast<juce::AudioParameterChoice*> (apvts.getParameter ("mode" + juce::String (i)));
     for (auto& e : effNorm) e = 0;
     for (int i = 0; i < 3; ++i) { modVal[(size_t) i] = 0; modPhase[(size_t) i] = 0; modEnv[(size_t) i] = 0; modTrigCount[(size_t) i] = 0; }
-    shapeFill (0, "SIN"); shapeFill (1, "SAW"); shapeFill (2, "RND");
+    shapeFill (0, "ENV"); shapeFill (1, "SAW"); shapeFill (2, "SIN");
 }
 
 bool VoxProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -105,8 +105,8 @@ void VoxProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuf
             if (S.playing) { S.phase += dt / trigLen (rv); if (S.phase >= 1) { S.phase = 0.9999f; S.playing = false; } }
         }
         if (S.phase < 0) S.phase += 1;
-        const float x = S.phase * 64; const int i0 = juce::jmin (63, (int) x);
-        const int i1 = mode == 0 ? juce::jmin (63, i0 + 1) : (i0 + 1) % 64;
+        const float x = S.phase * (kShapeRes - 1); const int i0 = juce::jmin (kShapeRes - 1, (int) x);
+        const int i1 = juce::jmin (kShapeRes - 1, i0 + 1);
         const float f = x - std::floor (x);
         float v = shapes[(size_t) i][(size_t) i0] + (shapes[(size_t) i][(size_t) i1] - shapes[(size_t) i][(size_t) i0]) * f;
         if (mode != 0 && sv >= 0.01f) v *= juce::jmin (1.0f, S.envS * 2);
@@ -187,18 +187,59 @@ void VoxProcessor::removeLink (int slot, int param)
     const int i = findLink (slot, param);
     if (i >= 0) { links[(size_t) i].slot = -1; links[(size_t) i].param = -1; links[(size_t) i].depth = 0; }
 }
+float VoxProcessor::curveShape (float t, float c)
+{
+    if (std::abs (c) < 0.001f) return t;
+    const float k = c * 6.0f;
+    return (std::exp (k * t) - 1.0f) / (std::exp (k) - 1.0f);
+}
+
+std::vector<ModPt> VoxProcessor::getPoints (int slot) const
+{
+    const juce::ScopedLock sl (pointsLock);
+    return points[(size_t) slot];
+}
+
+void VoxProcessor::setPoints (int slot, std::vector<ModPt> pts)
+{
+    std::stable_sort (pts.begin(), pts.end(), [] (const ModPt& a, const ModPt& b) { return a.x < b.x; });
+    if (pts.size() < 2) pts = { { 0, 0, 0 }, { 1, 0, 0 } };
+    pts.front().x = 0; pts.back().x = 1;
+    for (auto& q : pts) { q.x = juce::jlimit (0.0f, 1.0f, q.x); q.y = juce::jlimit (0.0f, 1.0f, q.y); q.curve = juce::jlimit (-1.0f, 1.0f, q.curve); }
+    // rasterise: each table cell takes the value of the segment that covers it
+    size_t seg = 0;
+    for (int k = 0; k < kShapeRes; ++k)
+    {
+        const float x = (float) k / (kShapeRes - 1);
+        while (seg + 2 < pts.size() && x > pts[seg + 1].x) ++seg;
+        const auto& a = pts[seg]; const auto& b = pts[seg + 1];
+        const float w = b.x - a.x;
+        const float t = w > 1e-5f ? juce::jlimit (0.0f, 1.0f, (x - a.x) / w) : 1.0f;
+        shapes[(size_t) slot][(size_t) k] = a.y + (b.y - a.y) * curveShape (t, a.curve);
+    }
+    const juce::ScopedLock sl (pointsLock);
+    points[(size_t) slot] = std::move (pts);
+}
+
 void VoxProcessor::shapeFill (int slot, const juce::String& kind)
 {
-    uint32_t s = (uint32_t) (7 + slot * 13);
-    for (int k = 0; k < 64; ++k)
+    std::vector<ModPt> p;
+    if (kind == "SIN")      p = { { 0, 0, 0.45f }, { 0.25f, 0.5f, -0.45f }, { 0.5f, 1, 0.45f }, { 0.75f, 0.5f, -0.45f }, { 1, 0, 0 } };
+    else if (kind == "SAW") p = { { 0, 1, 0 }, { 1, 0, 0 } };
+    else if (kind == "SQR") p = { { 0, 1, 0 }, { 0.5f, 1, 0 }, { 0.5f, 0, 0 }, { 1, 0, 0 } };
+    else if (kind == "ENV") p = { { 0, 0, -0.5f }, { 0.08f, 1, 0.55f }, { 1, 0, 0 } };
+    else if (kind == "RND")
     {
-        const float x = k / 64.0f; float v = 0;
-        if (kind == "SIN") v = 0.5f - 0.5f * std::cos (x * juce::MathConstants<float>::twoPi);
-        else if (kind == "SAW") v = 1 - x;
-        else if (kind == "SQR") v = x < 0.5f ? 1.0f : 0.0f;
-        else if (kind == "RND") { if (k % 8 == 0) s = (uint32_t) (((uint64_t) s * 16807u) % 2147483647u); v = (float) (s % 1000) / 1000.0f; }
-        shapes[(size_t) slot][(size_t) k] = v;
+        juce::Random r ((juce::int64) (juce::Time::getMillisecondCounter() + slot * 977));
+        for (int i = 0; i < 8; ++i)   // 8 random steps: each step is a flat pair of keyframes
+        {
+            const float y = r.nextFloat();
+            p.push_back ({ i / 8.0f, y, 0 });
+            p.push_back ({ (i + 1) / 8.0f, y, 0 });
+        }
     }
+    else p = { { 0, 0, 0 }, { 1, 0, 0 } };   // CLR
+    setPoints (slot, p);
 }
 
 // ---------------- presets ----------------
@@ -246,8 +287,9 @@ void VoxProcessor::getStateInformation (juce::MemoryBlock& dest)
     juce::ValueTree extra ("EXTRA");
     for (int i = 0; i < 3; ++i)
     {
-        juce::StringArray sa; for (auto& v : shapes[(size_t) i]) sa.add (juce::String (v.load(), 4));
-        extra.setProperty ("shape" + juce::String (i), sa.joinIntoString (","), nullptr);
+        juce::StringArray sa;
+        for (auto& q : getPoints (i)) sa.add (juce::String (q.x, 4) + "," + juce::String (q.y, 4) + "," + juce::String (q.curve, 3));
+        extra.setProperty ("pts" + juce::String (i), sa.joinIntoString (";"), nullptr);
     }
     juce::StringArray ls;
     for (auto& L : links) if (L.slot.load() >= 0) ls.add (juce::String (L.slot.load()) + ":" + knobDefs()[(size_t) L.param.load()].id + ":" + juce::String (L.depth.load(), 4));
@@ -270,8 +312,23 @@ void VoxProcessor::setStateInformation (const void* data, int size)
     {
         for (int i = 0; i < 3; ++i)
         {
-            juce::StringArray sa; sa.addTokens (extra.getProperty ("shape" + juce::String (i)).toString(), ",", "");
-            if (sa.size() == 64) for (int k = 0; k < 64; ++k) shapes[(size_t) i][(size_t) k] = sa[k].getFloatValue();
+            juce::StringArray sp; sp.addTokens (extra.getProperty ("pts" + juce::String (i)).toString(), ";", "");
+            if (sp.size() >= 2)
+            {
+                std::vector<ModPt> pts;
+                for (auto& t : sp) { juce::StringArray f; f.addTokens (t, ",", ""); if (f.size() == 3) pts.push_back ({ f[0].getFloatValue(), f[1].getFloatValue(), f[2].getFloatValue() }); }
+                setPoints (i, pts);
+            }
+            else
+            {
+                juce::StringArray sa; sa.addTokens (extra.getProperty ("shape" + juce::String (i)).toString(), ",", "");
+                if (sa.size() == 64)   // older projects: freehand drawing -> 17 keyframes
+                {
+                    std::vector<ModPt> pts;
+                    for (int k = 0; k <= 16; ++k) pts.push_back ({ k / 16.0f, sa[juce::jmin (63, k * 4)].getFloatValue(), 0 });
+                    setPoints (i, pts);
+                }
+            }
         }
         for (auto& L : links) { L.slot = -1; L.param = -1; L.depth = 0; }
         juce::StringArray ls; ls.addTokens (extra.getProperty ("links").toString(), ";", "");

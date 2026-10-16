@@ -209,44 +209,153 @@ void Knob::mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetail
     att.setValueAsCompleteGesture (juce::jlimit (0.0f, 1.0f, param->getValue() + w.deltaY * 0.05f));
 }
 
-// ---------------- mod canvas ----------------
-void ModCanvas::put (juce::Point<float> p)
+// ---------------- mod canvas (keyframe envelope) ----------------
+juce::Rectangle<float> ModCanvas::area() const { return getLocalBounds().toFloat().withTrimmedRight (14).reduced (7, 6); }
+juce::Point<float> ModCanvas::toScreen (float x, float y) const { auto a = area(); return { a.getX() + x * a.getWidth(), a.getBottom() - y * a.getHeight() }; }
+juce::Point<float> ModCanvas::handlePos (int seg) const
 {
-    const int xi = juce::jlimit (0, 63, (int) (p.x / (float) getWidth() * 64));
-    const float yv = juce::jlimit (0.0f, 1.0f, 1.0f - (p.y - 4) / (float) (getHeight() - 8));
-    auto& a = proc.shapes[(size_t) slot];
-    if (last < 0) a[(size_t) xi] = yv;
-    else
-    {
-        const float y0 = a[(size_t) last].load();
-        const int s = juce::jmin (last, xi), t = juce::jmax (last, xi);
-        for (int k = s; k <= t; ++k) a[(size_t) k] = (t == s) ? yv : y0 + (yv - y0) * (float) std::abs (k - last) / (float) std::abs (xi - last);
-    }
-    last = xi; repaint();
+    const auto& p0 = pts[(size_t) seg]; const auto& p1 = pts[(size_t) seg + 1];
+    return toScreen ((p0.x + p1.x) * 0.5f, p0.y + (p1.y - p0.y) * VoxProcessor::curveShape (0.5f, p0.curve));
 }
-void ModCanvas::mouseDown (const juce::MouseEvent& e) { last = -1; put (e.position); }
-void ModCanvas::mouseDrag (const juce::MouseEvent& e) { put (e.position); }
+int ModCanvas::hitPoint (juce::Point<float> m) const
+{
+    int best = -1; float bd = 9.0f;
+    for (int i = 0; i < (int) pts.size(); ++i) { const float d = toScreen (pts[(size_t) i].x, pts[(size_t) i].y).getDistanceFrom (m); if (d < bd) { bd = d; best = i; } }
+    return best;
+}
+int ModCanvas::hitHandle (juce::Point<float> m) const
+{
+    for (int i = 0; i + 1 < (int) pts.size(); ++i)
+    {
+        if (pts[(size_t) i + 1].x - pts[(size_t) i].x < 0.02f || std::abs (pts[(size_t) i + 1].y - pts[(size_t) i].y) < 0.02f) continue;   // nothing to bend
+        if (handlePos (i).getDistanceFrom (m) < 7.0f) return i;
+    }
+    return -1;
+}
+void ModCanvas::commit() { proc.setPoints (slot, pts); pts = proc.getPoints (slot); repaint(); }
+
+void ModCanvas::mouseMove (const juce::MouseEvent& e)
+{
+    pts = proc.getPoints (slot);
+    const int hp = hitPoint (e.position), hh = hp < 0 ? hitHandle (e.position) : -1;
+    if (hp != hoverPt || hh != hoverHandle) { hoverPt = hp; hoverHandle = hh; repaint(); }
+    setMouseCursor (hp >= 0 ? juce::MouseCursor::DraggingHandCursor : hh >= 0 ? juce::MouseCursor::UpDownResizeCursor : juce::MouseCursor::CrosshairCursor);
+}
+
+void ModCanvas::mouseDown (const juce::MouseEvent& e)
+{
+    pts = proc.getPoints (slot);
+    dragPt = dragCurve = -1;
+    const int hp = hitPoint (e.position);
+    if (e.mods.isPopupMenu())   // right-click deletes a point
+    {
+        if (hp > 0 && hp < (int) pts.size() - 1) { pts.erase (pts.begin() + hp); commit(); }
+        return;
+    }
+    if (hp >= 0) { dragPt = hp; return; }
+    const int hh = hitHandle (e.position);
+    if (hh >= 0) { dragCurve = hh; startCurve = pts[(size_t) hh].curve; startMouseY = e.position.y; return; }
+    // empty space: add a keyframe here and keep dragging it
+    auto a = area();
+    const float x = juce::jlimit (0.0f, 1.0f, (e.position.x - a.getX()) / a.getWidth());
+    const float y = juce::jlimit (0.0f, 1.0f, (a.getBottom() - e.position.y) / a.getHeight());
+    int at = 1; while (at < (int) pts.size() - 1 && pts[(size_t) at].x <= x) ++at;
+    pts.insert (pts.begin() + at, ModPt { x, y, 0 });
+    dragPt = at; hoverPt = at;
+    commit();
+}
+
+void ModCanvas::mouseDrag (const juce::MouseEvent& e)
+{
+    auto a = area();
+    if (dragPt >= 0 && dragPt < (int) pts.size())
+    {
+        float x = (e.position.x - a.getX()) / a.getWidth(), y = (a.getBottom() - e.position.y) / a.getHeight();
+        if (e.mods.isShiftDown()) { x = std::round (x * 16) / 16; y = std::round (y * 8) / 8; }   // shift = snap to grid
+        auto& q = pts[(size_t) dragPt];
+        const bool first = dragPt == 0, last = dragPt == (int) pts.size() - 1;
+        q.x = first ? 0.0f : last ? 1.0f : juce::jlimit (pts[(size_t) dragPt - 1].x, pts[(size_t) dragPt + 1].x, x);
+        q.y = juce::jlimit (0.0f, 1.0f, y);
+        proc.setPoints (slot, pts);   // keep our indices: the order can't change because x stays between neighbours
+        repaint();
+    }
+    else if (dragCurve >= 0 && dragCurve + 1 < (int) pts.size())
+    {
+        const auto& p0 = pts[(size_t) dragCurve]; const auto& p1 = pts[(size_t) dragCurve + 1];
+        const float dir = p1.y >= p0.y ? -1.0f : 1.0f;            // dragging up always bows the segment upward
+        pts[(size_t) dragCurve].curve = juce::jlimit (-1.0f, 1.0f, startCurve + dir * (startMouseY - e.position.y) / 70.0f);
+        proc.setPoints (slot, pts);
+        repaint();
+    }
+}
+
+void ModCanvas::mouseUp (const juce::MouseEvent&) { dragPt = dragCurve = -1; pts = proc.getPoints (slot); repaint(); }
+
+void ModCanvas::mouseDoubleClick (const juce::MouseEvent& e)
+{
+    pts = proc.getPoints (slot);
+    const int hp = hitPoint (e.position);
+    if (hp > 0 && hp < (int) pts.size() - 1) { pts.erase (pts.begin() + hp); commit(); return; }
+    const int hh = hitHandle (e.position);
+    if (hh >= 0) { pts[(size_t) hh].curve = 0; commit(); }   // double-click a diamond to straighten
+}
 
 void ModCanvas::paint (juce::Graphics& g)
 {
+    if (dragPt < 0 && dragCurve < 0) pts = proc.getPoints (slot);
     auto r = getLocalBounds().toFloat();
     lcd (g, r, 8);
     const float w = r.getWidth(), h = r.getHeight();
-    g.setColour (ice.withAlpha (0.09f));
-    for (int i = 1; i < 8; ++i) g.drawVerticalLine (juce::roundToInt (i * w / 8), 2, h - 2);
-    for (int i = 1; i < 4; ++i) g.drawHorizontalLine (juce::roundToInt (i * h / 4), 2, w - 2);
+    const auto ar = area();
+    g.setColour (ice.withAlpha (0.07f));
+    for (int i = 1; i < 16; ++i) g.drawVerticalLine (juce::roundToInt (ar.getX() + i * ar.getWidth() / 16), 3, h - 3);
+    g.setColour (ice.withAlpha (0.12f));
+    for (int i = 1; i < 4; ++i) g.drawVerticalLine (juce::roundToInt (ar.getX() + i * ar.getWidth() / 4), 3, h - 3);
+    for (int i = 1; i < 4; ++i) g.drawHorizontalLine (juce::roundToInt (ar.getY() + i * ar.getHeight() / 4), 3, w - 3);
     const auto col = modCol[slot];
     auto& a = proc.shapes[(size_t) slot];
-    auto yOf = [&] (float v) { return (1 - v) * (h - 10) + 5; };
     juce::Path line, fill;
-    for (int k = 0; k < 64; ++k) { const float px = (k + 0.5f) / 64 * w, py = yOf (a[(size_t) k].load()); if (k == 0) { line.startNewSubPath (px, py); fill.startNewSubPath (0, h); fill.lineTo (px, py); } else { line.lineTo (px, py); fill.lineTo (px, py); } }
-    fill.lineTo (w, h); fill.closeSubPath();
-    g.setGradientFill (juce::ColourGradient (col.withAlpha (0.55f), 0, 0, col.withAlpha (0.02f), 0, h, false)); g.fillPath (fill);
-    g.setColour (col); g.strokePath (line, juce::PathStrokeType (2.6f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
-    const float ph = proc.modPhase[(size_t) slot].load(), px = ph * w, py = yOf (proc.modVal[(size_t) slot].load());
-    g.setColour (ice); g.drawLine (px, 2, px, h - 2, 1.4f);
-    g.setColour (juce::Colours::white); g.fillEllipse (px - 4.5f, py - 4.5f, 9, 9);
-    g.setColour (lcdBg); g.drawEllipse (px - 4.5f, py - 4.5f, 9, 9, 1.8f);
+    for (int k = 0; k < kShapeRes; ++k)
+    {
+        const auto pt = toScreen ((float) k / (kShapeRes - 1), a[(size_t) k].load());
+        if (k == 0) { line.startNewSubPath (pt); fill.startNewSubPath (pt.x, ar.getBottom()); fill.lineTo (pt); }
+        else { line.lineTo (pt); fill.lineTo (pt); }
+    }
+    fill.lineTo (ar.getRight(), ar.getBottom()); fill.closeSubPath();
+    g.setGradientFill (juce::ColourGradient (col.withAlpha (0.5f), 0, ar.getY(), col.withAlpha (0.02f), 0, ar.getBottom(), false)); g.fillPath (fill);
+    g.setColour (col); g.strokePath (line, juce::PathStrokeType (2.4f, juce::PathStrokeType::mitered, juce::PathStrokeType::rounded));
+    // bend handles (diamonds) between keyframes
+    const bool over = isMouseOverOrDragging();
+    for (int i = 0; i + 1 < (int) pts.size(); ++i)
+    {
+        if (pts[(size_t) i + 1].x - pts[(size_t) i].x < 0.02f || std::abs (pts[(size_t) i + 1].y - pts[(size_t) i].y) < 0.02f) continue;
+        const auto hp = handlePos (i);
+        const bool hot = i == hoverHandle || i == dragCurve;
+        if (! over && ! hot) continue;
+        juce::Path dmd; const float d = hot ? 5.0f : 3.5f;
+        dmd.startNewSubPath (hp.x, hp.y - d); dmd.lineTo (hp.x + d, hp.y); dmd.lineTo (hp.x, hp.y + d); dmd.lineTo (hp.x - d, hp.y); dmd.closeSubPath();
+        g.setColour (hot ? juce::Colours::white : col.withAlpha (0.8f)); g.fillPath (dmd);
+    }
+    // keyframes
+    for (int i = 0; i < (int) pts.size(); ++i)
+    {
+        const auto pt = toScreen (pts[(size_t) i].x, pts[(size_t) i].y);
+        const bool hot = i == hoverPt || i == dragPt;
+        const float rr = hot ? 5.5f : 4.0f;
+        g.setColour (lcdBg); g.fillEllipse (pt.x - rr - 1.5f, pt.y - rr - 1.5f, (rr + 1.5f) * 2, (rr + 1.5f) * 2);
+        g.setColour (hot ? juce::Colours::white : col); g.fillEllipse (pt.x - rr, pt.y - rr, rr * 2, rr * 2);
+        if (! hot) { g.setColour (juce::Colours::white.withAlpha (0.85f)); g.fillEllipse (pt.x - rr * 0.45f, pt.y - rr * 0.45f, rr * 0.9f, rr * 0.9f); }
+    }
+    // playhead
+    const float ph = proc.modPhase[(size_t) slot].load();
+    const auto pp = toScreen (ph, proc.modVal[(size_t) slot].load());
+    g.setColour (ice.withAlpha (0.8f)); g.drawLine (pp.x, 3, pp.x, h - 3, 1.2f);
+    g.setColour (juce::Colours::white); g.fillEllipse (pp.x - 3.5f, pp.y - 3.5f, 7, 7);
+    if (over && pts.size() <= 3 && dragPt < 0)
+    {
+        g.setColour (ice.withAlpha (0.45f)); g.setFont (mono (8.0f));
+        g.drawText ("CLICK TO ADD POINTS", ar.toNearestInt().removeFromTop (12), juce::Justification::centred);
+    }
     const int mode = proc.modeParams[(size_t) slot]->getIndex();
     const float sv = proc.knobParams[(size_t) knobIndex ("sens" + juce::String (slot))]->getValue();
     if (mode == 0 || sv >= 0.01f)
@@ -277,7 +386,7 @@ ModPanel::ModPanel (VoxProcessor& p, int s, std::function<int()> lm, std::functi
         mp->beginChangeGesture(); mp->setValueNotifyingHost (mp->convertTo0to1 ((float) nx)); mp->endChangeGesture(); refresh();
     };
     linkBtn.onClick = [this] { setLinkMode (linkMode() == slot ? -1 : slot); };
-    for (auto* nm : { "SIN", "SAW", "SQR", "RND", "CLR" })
+    for (auto* nm : { "ENV", "SIN", "SAW", "SQR", "RND", "CLR" })
     {
         auto* b = shapeBtns.add (new juce::TextButton (nm));
         b->getProperties().set ("small", true);
@@ -316,7 +425,7 @@ void ModPanel::paint (juce::Graphics& g)
     g.setColour (modCol[slot]); g.setFont (disp (11.0f));
     g.drawText ("MOD " + juce::String::charToString ((juce::juce_wchar) ('A' + slot)), 12, 8, 120, 18, juce::Justification::centredLeft);
     g.setColour (ice.withAlpha (0.85f)); g.setFont (mono (8.5f));
-    g.drawText (linkText, getWidth() - 160, getHeight() - 28, 150, 20, juce::Justification::centredRight, true);
+    g.drawText (linkText, getWidth() - 128, getHeight() - 28, 118, 20, juce::Justification::centredRight, true);
 }
 
 void ModPanel::resized()
@@ -328,7 +437,7 @@ void ModPanel::resized()
     rate->setBounds (w - 86, 34, 80, 68);
     sens->setBounds (w - 86, 34 + 74, 80, 68);
     int x = 10;
-    for (auto* b : shapeBtns) { b->setBounds (x, h - 28, 38, 20); x += 41; }
+    for (auto* b : shapeBtns) { b->setBounds (x, h - 28, 34, 20); x += 36; }
 }
 
 // ---------------- visualizer ----------------

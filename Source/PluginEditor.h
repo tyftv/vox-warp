@@ -52,15 +52,27 @@ private:
 class ModCanvas : public juce::Component
 {
 public:
-    ModCanvas (VoxProcessor& p, int s) : proc (p), slot (s) {}
+    ModCanvas (VoxProcessor& p, int s) : proc (p), slot (s) { setRepaintsOnMouseActivity (true); }
     void paint (juce::Graphics&) override;
     void mouseDown (const juce::MouseEvent&) override;
     void mouseDrag (const juce::MouseEvent&) override;
-    void mouseUp (const juce::MouseEvent&) override { last = -1; }
+    void mouseUp (const juce::MouseEvent&) override;
+    void mouseDoubleClick (const juce::MouseEvent&) override;
+    void mouseMove (const juce::MouseEvent&) override;
+    void mouseExit (const juce::MouseEvent&) override { hoverPt = hoverHandle = -1; repaint(); }
     int lastTrig = 0; float flash = 0;
 private:
-    void put (juce::Point<float>);
-    VoxProcessor& proc; int slot; int last = -1;
+    // keyframe editing: click empty = add, drag point = move, double/right-click = delete, drag diamond = bend
+    juce::Rectangle<float> area() const;
+    juce::Point<float> toScreen (float x, float y) const;
+    juce::Point<float> handlePos (int seg) const;
+    int hitPoint (juce::Point<float>) const;
+    int hitHandle (juce::Point<float>) const;
+    void commit();
+    VoxProcessor& proc; int slot;
+    std::vector<ModPt> pts;
+    int dragPt = -1, dragCurve = -1, hoverPt = -1, hoverHandle = -1;
+    float startCurve = 0, startMouseY = 0;
 };
 
 class ModPanel : public juce::Component
