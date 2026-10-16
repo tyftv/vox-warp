@@ -12,12 +12,12 @@ int main()
     p.prepareToPlay (sr, bs);
     std::cout << "latency " << p.getLatencySamples() << "\n";
     juce::AudioBuffer<float> b (2, bs); juce::MidiBuffer mid;
-    double ph = 0; float peak = 0; int nan = 0;
+    double ph = 0; float peak = 0; int nan = 0; float gate = 1.0f;
     auto run = [&] (double hz, double secs)
     {
         for (int k = 0; k < (int) (secs * sr / bs); ++k)
         {
-            for (int s = 0; s < bs; ++s) { ph += 2 * juce::MathConstants<double>::pi * hz / sr; const float v = 0.25f * (float) (std::sin (ph) + 0.5 * std::sin (2 * ph) + 0.25 * std::sin (3 * ph)); b.setSample (0, s, v); b.setSample (1, s, v); }
+            for (int s = 0; s < bs; ++s) { ph += 2 * juce::MathConstants<double>::pi * hz / sr; const float v = gate * 0.25f * (float) (std::sin (ph) + 0.5 * std::sin (2 * ph) + 0.25 * std::sin (3 * ph)); b.setSample (0, s, v); b.setSample (1, s, v); }
             p.processBlock (b, mid);
             for (int c = 0; c < 2; ++c) for (int s = 0; s < bs; ++s) { const float v = b.getSample (c, s); if (! std::isfinite (v)) ++nan; peak = std::max (peak, std::abs (v)); }
         }
@@ -41,8 +41,8 @@ int main()
     ed->setSize (VoxEditor::W, VoxEditor::H);
     auto* ve = dynamic_cast<VoxEditor*> (ed.get());
     juce::Thread::sleep (1);
-    for (int f = 0; f < 150; ++f) { run (180 + 40 * std::sin (f * 0.1), 1.0 / 60); for (int c = 0; c < 2; ++c) b.applyGain (c, 0, bs, (f % 20) < 10 ? 1.0f : 0.0f); juce::Thread::sleep (16); ve->tickForTest();
-        if (f % 12 == 11) { auto im = ed->createComponentSnapshot ({ 394, 46, 312, 312 }, true, 1.0f); juce::File fo ("/tmp/claude-0/fr" + juce::String (f / 12) + ".png"); fo.deleteFile(); juce::FileOutputStream os2 (fo); juce::PNGImageFormat().writeImageToStream (im, os2); } }
+    for (int f = 0; f < 540; ++f) { gate = (f % 18) < 11 ? 1.0f : 0.05f; run (180 + 40 * std::sin (f * 0.1), 1.0 / 60); juce::Thread::sleep (16); ve->tickForTest();
+        if (f % 30 == 29) { auto im = ed->createComponentSnapshot ({ 394, 46, 312, 312 }, true, 1.0f); juce::File fo ("/tmp/claude-0/fr" + juce::String (f / 30) + ".png"); fo.deleteFile(); juce::FileOutputStream os2 (fo); juce::PNGImageFormat().writeImageToStream (im, os2); } }
     juce::ignoreUnused (ve);
     auto snap = [&] (const char* path) { auto im = ed->createComponentSnapshot (ed->getLocalBounds(), true, 1.0f); juce::File f (path); f.deleteFile(); juce::FileOutputStream os (f); juce::PNGImageFormat().writeImageToStream (im, os); };
     snap ("/tmp/claude-0/editor.png");

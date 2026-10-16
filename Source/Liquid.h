@@ -9,21 +9,21 @@
 class Liquid
 {
 public:
-    struct Forces { float gx = 0, gy = 0, mag = 5, spike = 10, swirl = 0, noise = 0, damp = 0.996f; };
+    struct Forces { float gx = 0, gy = 0, mag = 5, spike = 10, swirl = 0, noise = 0, damp = 0.996f, flow = 0, t = 0, buoy = 0, heat = 0; };
 
     void init()
     {
-        N = 330;
+        N = 220;
         x.assign (N, 0); y = vx = vy = px = py = x;
         nc = (int) std::ceil (2.4f / h); head.assign ((size_t) (nc * nc), -1); next.assign ((size_t) N, -1);
         int i = 0;
         for (int row = 0; i < N && row < 200; ++row)
         {
-            const float yy = 0.45f - row * d * 0.866f;
+            const float yy = 0.85f - row * d * 0.866f;
             for (int col = 0; col < 60 && i < N; ++col)
             {
                 const float xx = -0.7f + col * d + (row % 2) * d / 2;
-                if (xx * xx + yy * yy < 0.5f * 0.5f) { x[(size_t) i] = xx; y[(size_t) i] = yy; ++i; }
+                if (xx * xx + yy * yy < 0.86f * 0.86f && xx * xx + (yy - 0.5f) * (yy - 0.5f) < 0.42f * 0.42f) { x[(size_t) i] = xx; y[(size_t) i] = yy; ++i; }
             }
         }
         N = i;
@@ -41,6 +41,17 @@ public:
     {
         const float dt2 = dt * dt, h2 = h * h;
         if ((int) rhoP.size() != N) rhoP.assign ((size_t) N, rho0);
+        if ((int) temp.size() != N) { temp.assign ((size_t) N, 0.5f); tempN = temp; for (int i = 0; i < N; ++i) temp[(size_t) i] = 0.35f + 0.3f * uni (rng); }
+        hotX = 0.22f * std::sin (F.t * 0.21f) + 0.1f * std::sin (F.t * 0.53f);
+        // lava lamp: the bottom of the dome heats the wax, the top cools it
+        for (int i = 0; i < N; ++i)
+        {
+            const float Y = y[(size_t) i];
+            const float X = x[(size_t) i], hx = X - hotX;
+            if (Y > 0.3f)  temp[(size_t) i] = std::min (1.0f, temp[(size_t) i] + F.heat * dt * (Y - 0.3f) * 6.0f * std::exp (-hx * hx / 0.035f));   // hot spot at the bottom
+            if (Y < -0.15f) temp[(size_t) i] = std::max (0.0f, temp[(size_t) i] - (0.4f + F.heat * 0.6f) * dt * (-0.15f - Y) * 3.0f);
+            else temp[(size_t) i] += (0.42f - temp[(size_t) i]) * dt * 0.15f;   // slowly cools back off the hot spot
+        }
         float bmean = 0; for (int b = 0; b < NB; ++b) bmean += bands[b]; bmean /= (float) juce::jmax (1, NB);
         // centre of mass: spikes and splashes work relative to the liquid itself, not the dome centre
         float cxm = 0, cym = 0; for (int i = 0; i < N; ++i) { cxm += x[(size_t) i]; cym += y[(size_t) i]; }
@@ -64,6 +75,17 @@ public:
             }
             if (F.swirl != 0) { ax += -(y[(size_t) i] - cym) * F.swirl * 2; ay += (x[(size_t) i] - cxm) * F.swirl * 2; }
             if (F.noise > 0) { ax += (uni (rng) - 0.5f) * F.noise; ay += (uni (rng) - 0.5f) * F.noise; }
+            if (F.flow > 0)   // slow swirling current in the surrounding "water": drags blobs around, splits and merges them
+            {
+                const float X = x[(size_t) i], Y = y[(size_t) i], T = F.t;
+                // divergence-free: velocity from a stream function, so the current stirs without inflating the liquid
+                const float s1 = std::sin (X * 4.6f + T * 0.7f), c1 = std::cos (X * 4.6f + T * 0.7f), s2 = std::sin (Y * 4.2f - T * 0.6f), c2 = std::cos (Y * 4.2f - T * 0.6f);
+                const float ph = X * 7.3f - Y * 6.1f + T * 1.1f, cp = std::cos (ph);
+                const float fvx = 0.16f * (s1 * 4.2f * c2 - 0.5f * 6.1f * cp);
+                                const float fvy = -0.16f * (4.6f * c1 * s2 + 0.5f * 7.3f * cp);
+                ax += (fvx * F.flow - vx[(size_t) i]) * 1.4f; ay += (fvy * F.flow - vy[(size_t) i]) * 1.4f;
+            }
+            if (F.buoy != 0) ay -= (temp[(size_t) i] - 0.5f) * F.buoy;          // hot wax rises (up = -y), cool wax sinks
             vx[(size_t) i] = (vx[(size_t) i] + ax * dt) * F.damp; vy[(size_t) i] = (vy[(size_t) i] + ay * dt) * F.damp;
         }
         // viscosity (Clavet et al.): neighbours that move apart drag on each other -> gooey, coherent liquid
@@ -97,14 +119,15 @@ public:
         {
             const float xi = x[(size_t) i], yi = y[(size_t) i];
             const int cx = cellX (xi), cy = cellX (yi);
-            float rho = 0, rhon = 0;
+            float rho = 0, rhon = 0, tsum = 0, twt = 0;
             for (int oy = -1; oy <= 1; ++oy) { const int yy = cy + oy; if (yy < 0 || yy >= nc) continue;
                 for (int ox = -1; ox <= 1; ++ox) { const int xx = cx + ox; if (xx < 0 || xx >= nc) continue;
                     for (int j = head[(size_t) (yy * nc + xx)]; j >= 0; j = next[(size_t) j]) { if (j == i) continue;
                         const float dx = x[(size_t) j] - xi, dy = y[(size_t) j] - yi, r2 = dx * dx + dy * dy;
-                        if (r2 < h2) { const float q = 1 - std::sqrt (r2) / h; rho += q * q; rhon += q * q * q; } } } }
+                        if (r2 < h2) { const float q = 1 - std::sqrt (r2) / h; rho += q * q; rhon += q * q * q; tsum += q * temp[(size_t) j]; twt += q; } } } }
             rhoP[(size_t) i] = rho;
-            const float P = k * (rho - rho0), Pn = kn * rhon; float mx = 0, my = 0;
+            tempN[(size_t) i] = twt > 0 ? temp[(size_t) i] + (tsum / twt - temp[(size_t) i]) * 0.02f : temp[(size_t) i];
+            const float Pr = k * (rho - rho0), P = Pr < 0 ? Pr * (rho < rho0 * 0.5f ? 0.15f : tension) : Pr, Pn = kn * rhon; float mx = 0, my = 0;
             for (int oy = -1; oy <= 1; ++oy) { const int yy = cy + oy; if (yy < 0 || yy >= nc) continue;
                 for (int ox = -1; ox <= 1; ++ox) { const int xx = cx + ox; if (xx < 0 || xx >= nc) continue;
                     for (int j = head[(size_t) (yy * nc + xx)]; j >= 0; j = next[(size_t) j]) { if (j == i) continue;
@@ -113,6 +136,7 @@ public:
                             const float Dx = D * dx, Dy = D * dy; x[(size_t) j] += Dx; y[(size_t) j] += Dy; mx -= Dx; my -= Dy; } } } }
             x[(size_t) i] += mx; y[(size_t) i] += my;
         }
+        std::swap (temp, tempN);
         for (int i = 0; i < N; ++i)
         {
             const float r = std::hypot (x[(size_t) i], y[(size_t) i]);
@@ -128,17 +152,27 @@ public:
     // strongest push, so it stretches into a teardrop and pinches off droplets instead of hollowing out.
     void kick (float amt)
     {
-        const float th = uni (rng) * 6.2831853f, dx0 = std::cos (th), dy0 = std::sin (th);
-        float ext = 1e-3f;
-        for (int i = 0; i < N; ++i) ext = std::max (ext, (x[(size_t) i] - comX) * dx0 + (y[(size_t) i] - comY) * dy0);
-        for (int i = 0; i < N; ++i)
+        // splash: tear one to three clumps off the surface and throw each one as a unit.
+        // Every particle in a clump gets the same velocity, so it flies as a round droplet,
+        // separates cleanly, then the pull toward the centre brings it back to merge.
+        const int drops = 1 + (int) (uni (rng) * std::min (2.99f, 1.0f + amt * 3.0f));
+        for (int dI = 0; dI < drops; ++dI)
         {
-            const float pr = ((x[(size_t) i] - comX) * dx0 + (y[(size_t) i] - comY) * dy0) / ext;   // -1..1 along the splash
-            const float w = pr > 0 ? pr * pr * (1.2f + uni (rng) * 0.8f) : pr * 0.25f;
-            const float side = ((x[(size_t) i] - comX) * -dy0 + (y[(size_t) i] - comY) * dx0) * 0.6f;
-            vx[(size_t) i] += dx0 * w * amt * 4.0f - dy0 * side * amt * 0.6f + (uni (rng) - 0.5f) * amt * 0.3f;
-            vy[(size_t) i] += dy0 * w * amt * 4.0f + dx0 * side * amt * 0.6f + (uni (rng) - 0.5f) * amt * 0.3f;
+            const float th = uni (rng) * 6.2831853f, dx0 = std::cos (th), dy0 = std::sin (th);
+            int far = 0; float best = -1e9f;
+            for (int i = 0; i < N; ++i) { const float pr = (x[(size_t) i] - comX) * dx0 + (y[(size_t) i] - comY) * dy0; if (pr > best) { best = pr; far = i; } }
+            const float fx = x[(size_t) far] - dx0 * 0.03f, fy = y[(size_t) far] - dy0 * 0.03f;
+            const float rd = 0.08f + uni (rng) * 0.09f, rd2 = rd * rd;
+            const float sp = amt * (3.5f + uni (rng) * 2.5f);
+            const float sx = dx0 * sp + (uni (rng) - 0.5f) * sp * 0.5f, sy = dy0 * sp + (uni (rng) - 0.5f) * sp * 0.5f;
+            for (int i = 0; i < N; ++i)
+            {
+                const float ddx = x[(size_t) i] - fx, ddy = y[(size_t) i] - fy, d2 = ddx * ddx + ddy * ddy;
+                if (d2 < rd2) { const float w = 1.0f - 0.35f * d2 / rd2; vx[(size_t) i] = vx[(size_t) i] * 0.3f + sx * w; vy[(size_t) i] = vy[(size_t) i] * 0.3f + sy * w; }
+            }
         }
+        // the rest of the body recoils and wobbles a little
+        for (int i = 0; i < N; ++i) { vx[(size_t) i] += (uni (rng) - 0.5f) * amt * 0.5f; vy[(size_t) i] += (uni (rng) - 0.5f) * amt * 0.5f; }
     }
 
     // Render into an ARGB image of size G×G covering sim space [-1,1].
@@ -150,7 +184,7 @@ public:
         if ((int) field.size() != G * G) { field.assign ((size_t) (G * G), 0); tmp = field; hgt = field; }
         if (std::abs (hue - lutHue) > 2) buildLut (hue);
         std::fill (field.begin(), field.end(), 0.0f);
-        const float rk = 0.072f * (0.85f + throat * 0.4f), rkc = rk * G / 2, irk = 1 / (rkc * rkc); const int R = (int) std::ceil (rkc);
+        const float rk = 0.088f * (0.85f + throat * 0.4f), rkc = rk * G / 2, irk = 1 / (rkc * rkc); const int R = (int) std::ceil (rkc);
         for (int i = 0; i < N; ++i)
         {
             const float gx = (x[(size_t) i] + 1) * 0.5f * G, gy = (y[(size_t) i] + 1) * 0.5f * G;
@@ -269,7 +303,7 @@ public:
             }
         }
 #if VW_DEBUG
-        { float sr=0; for(int i=0;i<N;++i) sr+=std::hypot(x[(size_t)i],y[(size_t)i]); fprintf(stderr,"render meanR=%f\n",sr/std::max(1,N)); }
+        { float sr=0; for(int i=0;i<N;++i) sr+=std::hypot(x[(size_t)i],y[(size_t)i]); int lo=0; float vm=0; for(int i=0;i<N;++i){ if(rhoP.size()==(size_t)N && rhoP[(size_t)i]<rho0*0.5f) ++lo; vm=std::max(vm,std::hypot(vx[(size_t)i],vy[(size_t)i])); } fprintf(stderr,"render meanR=%.3f lowdens=%d vmax=%.2f com=%.2f,%.2f\n",sr/std::max(1,N),lo,vm,comX,comY); }
 #endif
     }
 
@@ -281,7 +315,7 @@ private:
     std::vector<float> x, y, vx, vy, px, py, field, tmp, hgt, dist;
     float hueR = .2f, hueG = .4f, hueB = 1, hue2R = .8f, hue2G = .3f, hue2B = 1;
     std::vector<int> head, next;
-    std::vector<float> rhoP; float comX = 0, comY = 0, visc = 1.2f, viscQ = 0.3f;
+    std::vector<float> rhoP, temp, tempN; float hotX = 0; float comX = 0, comY = 0, visc = 4.5f, viscQ = 0.8f, tension = 1.0f;
     std::vector<float> lut = std::vector<float> (256 * 3, 0.0f); float lutHue = -100;
     std::mt19937 rng { 1234 }; std::uniform_real_distribution<float> uni { 0.0f, 1.0f };
 
