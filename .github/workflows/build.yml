@@ -3,6 +3,7 @@ name: Build Vox Warp
 on:
   push:
     branches: [ main ]
+    paths-ignore: [ 'docs/**' ]
   workflow_dispatch:
 
 permissions:
