@@ -685,8 +685,16 @@ void VoxEditor::Root::paint (juce::Graphics& g)
         g.setFont (disp (24.0f));
         juce::ColourGradient lg (juce::Colours::white, 0, 6, juce::Colour (0xffd9e6f4), 0, 34, false);
         lg.addColour (0.48, juce::Colour (0xff7e8da2)); lg.addColour (0.52, juce::Colour (0xff18243a)); lg.addColour (0.7, juce::Colour (0xff5f7594));
-        juce::GlyphArrangement ga; ga.addLineOfText (disp (24.0f), "VOX", 14, 30);
-        juce::GlyphArrangement gb; gb.addLineOfText (disp (24.0f), "WARP", 14 + ga.getBoundingBox (0, -1, true).getWidth() + 2, 30);
+        {
+            static const juce::Image logo = juce::ImageCache::getFromMemory (BinaryData::Logo_png, BinaryData::Logo_pngSize);
+            const juce::Rectangle<float> lr (9, 4, 32, 32);
+            g.setColour (navy.withAlpha (0.85f));
+            g.drawImage (logo, lr.translated (0, 1.4f), juce::RectanglePlacement::centred, true);
+            g.setGradientFill (lg);
+            g.drawImage (logo, lr, juce::RectanglePlacement::centred, true);
+        }
+        juce::GlyphArrangement ga; ga.addLineOfText (disp (24.0f), "VOX", 48, 30);
+        juce::GlyphArrangement gb; gb.addLineOfText (disp (24.0f), "WARP", 48 + ga.getBoundingBox (0, -1, true).getWidth() + 2, 30);
         juce::Path pa, pb; ga.createPath (pa); gb.createPath (pb);
         g.setColour (navy); g.strokePath (pa, juce::PathStrokeType (1.6f)); g.strokePath (pb, juce::PathStrokeType (1.6f));
         g.setGradientFill (lg); g.fillPath (pa);
@@ -694,7 +702,7 @@ void VoxEditor::Root::paint (juce::Graphics& g)
         wg.addColour (0.48, juce::Colour (0xff8fe9ff)); wg.addColour (0.52, juce::Colour (0xff1f7dff)); wg.addColour (0.75, juce::Colour (0xff1658d6));
         g.setGradientFill (wg); g.fillPath (pb);
         g.setColour (juce::Colour (0xff2c3e5c)); g.setFont (mono (8.5f));
-        g.drawText ("VOCAL MIXER FX", 196, 13, 120, 16, juce::Justification::centredLeft);
+        g.drawText ("VOCAL MIXER FX", 232, 13, 96, 16, juce::Justification::centredLeft);
         g.setFont (bold (9.5f)); g.drawText ("PRESET", 330, 13, 46, 16, juce::Justification::centredRight);
         if (ed.linkMode >= 0)
         {

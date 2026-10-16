@@ -32,7 +32,7 @@ juce_add_plugin(VoxWarp
   COPY_PLUGIN_AFTER_BUILD FALSE
   VST3_CATEGORIES Fx Pitch Shift)
 
-juce_add_binary_data(VoxWarpData SOURCES Resources/Michroma.ttf Resources/ChakraPetchBold.ttf)
+juce_add_binary_data(VoxWarpData SOURCES Resources/Michroma.ttf Resources/ChakraPetchBold.ttf Resources/Logo.png)
 
 target_sources(VoxWarp PRIVATE Source/PluginProcessor.cpp Source/PluginEditor.cpp)
 target_include_directories(VoxWarp PRIVATE Source)
