@@ -48,6 +48,7 @@ public:
     std::array<std::atomic<float>, 3> modVal, modPhase, modEnv;
     std::array<std::atomic<int>, 3> modTrigCount;
     std::atomic<float> teleIn { 0 }, teleOut { 0 }, teleRms { 0 }, outLevel { 0 };
+    std::atomic<float> inPeak { 0 };   // loudest input block since the UI last looked (fluid SENS)
     std::atomic<bool> teleVoiced { false }, teleStut { false };
     std::atomic<int> teleGrains { 0 };
 

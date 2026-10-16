@@ -216,7 +216,7 @@ public:
                 const int i = py0 * G + px0; const float d = std::min (dist[(size_t) i], 1e5f);
                 if (d <= 0) { hgt[(size_t) i] = 0; continue; }
                 const float dd = std::min (d, Dm), k1 = 1 - dd / Dm, hh = Dm * (1 - k1 * k1);
-                const float u = (px0 + 0.5f) / G * 2 - 1, r = std::sqrt (u * u + w * w);
+                const float u = (px0 + 0.5f) / G * 2 - 1;
                 const float rip = std::sin (u * 11 + time * 2.3f) * std::sin (w * 9 - time * 1.9f) * 0.6f
                                 + std::sin ((u * 0.7f - w) * 17 + time * 3.1f) * 0.3f
                                 + std::sin ((u + w * 0.4f) * 23 - time * 5.0f) * std::min (1.5f, energy) * 0.25f;

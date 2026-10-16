@@ -71,6 +71,7 @@ void VoxProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuf
         v = nIn > 0 ? v / (float) nIn : 0; m[s] = v; e += v * v;
     }
     const float inLvl = n > 0 ? std::sqrt (e / (float) n) : 0.0f;
+    if (inLvl > inPeak.load()) inPeak = inLvl;
     const float dt = (float) n / (float) sr;
 
     // host tempo for SYNC mods

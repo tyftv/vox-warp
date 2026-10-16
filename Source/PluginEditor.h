@@ -95,7 +95,7 @@ private:
     std::array<float, NB> bands {};
     juce::Image A, B, tiny, liq;
     Liquid lq;
-    float t = 0, rot = 0, pk = 0.05f, env = 0, la = 0, lvl = 0, kickCool = 0, dripCool = 0; bool kickArmed = true;
+    float t = 0, rot = 0, pk = 0.05f, env = 0, la = 0, lvl = 0, kickCool = 0, dripCool = 0; bool kickArmed = true, hitArmed = true;
     bool running = false;
     std::mt19937 rng { 77 }; std::uniform_real_distribution<float> uni { 0.0f, 1.0f };
     float E (const char* id) const { return proc.effNorm[(size_t) vw::knobIndex (id)].load(); }

@@ -30,7 +30,7 @@ inline const std::vector<PDef>& knobDefs()
         { "crush",   "CRUSH",    0.0f,        gRot,    true },
         { "decim",   "DECIMATE", 0.0f,        gRot,    true },
         { "fold",    "FOLD",     0.0f,        gRot,    true },
-        { "react",   "REACT",    0.6f,        gMaster, false },
+        { "react",   "FLUID",    0.5f,        gMaster, false },
         { "mix",     "MIX",      1.0f,        gMaster, true },
         { "out",     "OUTPUT",   0.5f,        gMaster, true },
         { "rate0",   "LENGTH",   0.53f,       gMod,    false },
@@ -77,7 +77,7 @@ inline juce::String formatKnob (const juce::String& id, float v, int mode = 0)
     if (id == "scatter") { static const char* n[] { "+UNISON","+OCT UP","+OCT DN","+5TH","+12TH","+4TH DN","+2 OCT","+4TH" }; return v < 0.01f ? "OFF" : n[juce::jlimit (0, 7, (int) (v * 7.99f))]; }
     if (id == "crush")   return v < 0.01f ? "OFF" : juce::String (16 - v * 14, 1) + " bit";
     if (id == "decim")   return v < 0.01f ? "OFF" : juce::String::fromUTF8 ("\xc3\xb7") + juce::String (1 + v * v * 40, 1);
-    if (id == "react")   return juce::String::fromUTF8 ("\xc3\x97") + juce::String (reactGain (v), 1);
+    if (id == "react")   return juce::String::fromUTF8 ("\xc3\x97") + juce::String (sensGain (v), 1);
     if (id == "out")     { const float g = v * 2; return g < 0.001f ? "-inf dB" : juce::String (20 * std::log10 (g), 1) + " dB"; }
     if (id.startsWith ("rate"))
     {

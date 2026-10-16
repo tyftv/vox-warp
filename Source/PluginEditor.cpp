@@ -356,28 +356,30 @@ void Visualizer::tick (float dt)
         m /= (float) (b1 - b0 + 1);
         const float db = 20 * std::log10 (m * 2 / 2048.0f + 1e-9f);
         const float nv = running ? juce::jlimit (0.0f, 1.0f, (db + 100) / 70) : 0.16f + 0.1f * std::sin (t * 1.1f + b * 0.7f) + 0.06f * std::sin (t * 2.3f + b * 1.9f);
-        bands[(size_t) b] = bands[(size_t) b] * 0.7f + nv * 0.3f;
+        bands[(size_t) b] = bands[(size_t) b] * 0.45f + nv * 0.55f;
     }
     if (! running) for (int i = 0; i < 2048; ++i) td[(size_t) i] = 0.04f * std::sin (i * 0.02f + t * 3) * std::sin (t * 0.7f);
 
-    // liquid physics, driven by an auto-gained level
+    // liquid physics, driven by the input level times FLUID sensitivity (same curve and threshold as mod SENS)
     if (! lq.ok) lq.init();
-    pk = juce::jmax (lvl, pk * 0.997f, 0.03f);
-    const float rg = reactGain (E ("react")), ln = running ? juce::jmin (2.5f, lvl / pk * rg) : 0.0f;
-    env += (ln - env) * (ln > env ? 0.45f : 0.08f);
-    float onset = juce::jmax (0.0f, ln - la * 1.25f); la += (ln - la) * 0.08f;
+    const float ein = proc.inPeak.exchange (0.0f) * sensGain (E ("react"));
+    env += (ein - env) * (ein > env ? 0.8f : 0.12f);          // snaps up, eases down
+    float onset = 0;
+    if (hitArmed && ein > 0.25f) { onset = ein; hitArmed = false; }   // hit = crossing the line, like TRIG
+    else if (! hitArmed && ein < 0.12f) hitArmed = true;
+    juce::ignoreUnused (la, pk);
     const bool freeze = running && proc.teleStut.load();
     const float dirG = E ("reverse") > 0.5f ? -1.0f : 1.0f;
     Liquid::Forces F;
     F.gx = std::sin (t * 1.6f) * E ("width") * 2.2f; F.gy = std::cos (t * 1.1f) * E ("width") * 1.2f;
     F.mag = 0.9f;   // gentle hold toward the middle so wax doesn't stick to the glass
-    if (dirG < 0) F.buoy = -F.buoy;   // REVERSE: upside-down lava lamp
     F.spike = (0.4f + E ("formant") * 0.6f) * (running ? 0.3f + juce::jmin (env, 1.5f) * 0.4f : 0.3f);
     F.swirl = E ("fold") > 0.01f ? std::sin (t * 0.9f) * E ("fold") * 5 : 0;
     F.noise = E ("scatter") * 10; F.damp = 0.992f - E ("spray") * 0.003f;
     F.flow = 0.08f; F.t = t;
     F.buoy = 5.0f + (running ? juce::jmin (env, 1.6f) * 4.0f : 0.0f);      // louder = hotter = faster lava
     F.heat = 0.5f + (running ? juce::jmin (env, 1.6f) * 1.2f : 0.0f);
+    if (dirG < 0) F.buoy = -F.buoy;   // REVERSE: upside-down lava lamp
     if (! running && uni (rng) < 0.006f) onset = 0.06f;
 #if VW_DEBUG
     { static const juce::String off = juce::SystemStats::getEnvironmentVariable ("VWOFF", "");
@@ -389,20 +391,19 @@ void Visualizer::tick (float dt)
     if (! freeze)
     {
         kickCool -= dt; dripCool -= dt;
-        if (onset < 0.08f) kickArmed = true;
         // while there's sound, keep shedding drips: more often and harder as it gets louder
         if (running && env > 0.35f && dripCool <= 0)
         {
             lq.kick ((0.08f + 0.1f * juce::jmin (env, 1.5f) / 1.5f) * (1 + E ("spray") * 2.0f));
             dripCool = (0.4f + uni (rng) * 0.6f) / juce::jmax (0.6f, juce::jmin (env, 1.6f));
         }
-        if (kickArmed && kickCool <= 0 && onset > 0.25f)
+        if (kickCool <= 0 && onset > 0.25f)
         {
-            lq.kick (juce::jmin (0.35f, 0.12f + onset * 0.25f) * (1 + E ("spray") * 2.0f)); dripCool = juce::jmax (dripCool, 0.15f);
+            lq.kick (juce::jmin (0.6f, 0.2f + (onset - 0.25f) * 0.5f) * (1 + E ("spray") * 2.0f)); dripCool = juce::jmax (dripCool, 0.15f);
 #if VW_DEBUG
             fprintf (stderr, "KICK onset=%.2f\n", onset);
 #endif
-            kickArmed = false; kickCool = 0.12f;
+            kickCool = 0.08f;
         }
         const int sub = juce::jmax (2, (int) std::ceil (dt / (1.0f / 120.0f)));
         for (int k = 0; k < sub; ++k) lq.step (dt / sub, F, bands.data(), NB);
