@@ -11,10 +11,21 @@ static const juce::Colour navy (0xff16233a), ice (0xff7fe8ff), lcdBg (0xff05192a
 static const juce::Colour cTune (0xff2f7dff), cBody (0xff00b8cc), cShat (0xffb636ff), cRot (0xffff7a1a);
 static const juce::Colour modCol[3] { juce::Colour (0xff00a8ff), juce::Colour (0xffe030ff), juce::Colour (0xffff8a00) };
 
-static juce::Typeface::Ptr tfDisp() { static auto t = juce::Typeface::createSystemTypefaceFor (BinaryData::Michroma_ttf, BinaryData::Michroma_ttfSize); return t; }
-static juce::Typeface::Ptr tfBold() { static auto t = juce::Typeface::createSystemTypefaceFor (BinaryData::ChakraPetchBold_ttf, BinaryData::ChakraPetchBold_ttfSize); return t; }
-juce::Font disp (float h) { return juce::Font (juce::FontOptions (tfDisp()).withHeight (h)); }
-juce::Font bold (float h) { return juce::Font (juce::FontOptions (tfBold()).withHeight (h)); }
+// Fonts and the logo live in a shared object owned by open editors (never in function statics),
+// so they're released while the host's graphics system is still alive.
+static Assets* gAssets = nullptr;
+Assets::Assets()
+{
+    disp = juce::Typeface::createSystemTypefaceFor (BinaryData::Michroma_ttf, BinaryData::Michroma_ttfSize);
+    bold = juce::Typeface::createSystemTypefaceFor (BinaryData::ChakraPetchBold_ttf, BinaryData::ChakraPetchBold_ttfSize);
+    logo = juce::PNGImageFormat::loadFrom (BinaryData::Logo_png, BinaryData::Logo_pngSize);
+    gAssets = this;
+}
+Assets::~Assets() { if (gAssets == this) gAssets = nullptr; }
+static juce::Typeface::Ptr tfDisp() { return gAssets != nullptr ? gAssets->disp : juce::Typeface::Ptr(); }
+static juce::Typeface::Ptr tfBold() { return gAssets != nullptr ? gAssets->bold : juce::Typeface::Ptr(); }
+juce::Font disp (float h) { auto t = tfDisp(); return t != nullptr ? juce::Font (juce::FontOptions (t).withHeight (h)) : juce::Font (juce::FontOptions (h)); }
+juce::Font bold (float h) { auto t = tfBold(); return t != nullptr ? juce::Font (juce::FontOptions (t).withHeight (h)) : juce::Font (juce::FontOptions (h, juce::Font::bold)); }
 juce::Font mono (float h) { return juce::Font (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), h, juce::Font::bold)); }
 
 static void lcd (juce::Graphics& g, juce::Rectangle<float> r, float rad = 8)
@@ -45,7 +56,7 @@ static void gel (juce::Graphics& g, juce::Rectangle<float> r, juce::Colour c, fl
 // ---------------- look and feel ----------------
 Y2KLook::Y2KLook()
 {
-    setDefaultSansSerifTypeface (tfBold());
+    if (auto t = tfBold()) setDefaultSansSerifTypeface (t);
     setColour (juce::PopupMenu::backgroundColourId, juce::Colour (0xffeef3f9));
     setColour (juce::PopupMenu::textColourId, navy);
     setColour (juce::PopupMenu::highlightedBackgroundColourId, ui::cTune);
@@ -402,7 +413,7 @@ void Visualizer::tick (float dt)
     const float scale = (float) juce::Component::getApproximateScaleFactorForComponent (this);
     const int full = juce::jlimit (128, 900, (int) (getWidth() * scale));
     const int fs = juce::jmax (64, full / 2);
-    if (! A.isValid() || A.getWidth() != fs) { A = juce::Image (juce::Image::ARGB, fs, fs, true); B = juce::Image (juce::Image::ARGB, fs, fs, true); }
+    if (! A.isValid() || A.getWidth() != fs) { A = juce::Image (juce::Image::ARGB, fs, fs, true, juce::SoftwareImageType()); B = juce::Image (juce::Image::ARGB, fs, fs, true, juce::SoftwareImageType()); }
     {
         juce::Graphics g (B);
         g.fillAll (juce::Colour (0xff050a14));
@@ -425,7 +436,7 @@ void Visualizer::tick (float dt)
 
     // liquid image
     const int G = E ("decim") > 0.05f ? juce::jmax (36, (int) std::round (132 * (1 - E ("decim") * 0.75f))) : juce::jlimit (160, 240, (int) (full * 0.75f));
-    if (! liq.isValid() || liq.getWidth() != G) liq = juce::Image (juce::Image::ARGB, G, G, true);
+    if (! liq.isValid() || liq.getWidth() != G) liq = juce::Image (juce::Image::ARGB, G, G, true, juce::SoftwareImageType());
 #if VW_DEBUG
     const double t0 = juce::Time::getMillisecondCounterHiRes();
 #endif
@@ -465,7 +476,7 @@ void Visualizer::paint (juce::Graphics& g)
         if (pix > 1)
         {
             const int tw = juce::jmax (8, A.getWidth() / pix);
-            if (! tiny.isValid() || tiny.getWidth() != tw) tiny = juce::Image (juce::Image::ARGB, tw, tw, true);
+            if (! tiny.isValid() || tiny.getWidth() != tw) tiny = juce::Image (juce::Image::ARGB, tw, tw, true, juce::SoftwareImageType());
             { juce::Graphics tg (tiny); tg.drawImage (A, 0, 0, tw, tw, 0, 0, A.getWidth(), A.getHeight()); }
             g.setImageResamplingQuality (juce::Graphics::lowResamplingQuality);
             g.drawImage (tiny, gl);
@@ -625,7 +636,8 @@ VoxEditor::VoxEditor (VoxProcessor& p) : AudioProcessorEditor (p), proc (p), viz
         juce::PopupMenu m;
         const auto& P = VoxProcessor::presets();
         for (int i = 0; i < (int) P.size(); ++i) m.addItem (i + 1, P[(size_t) i].name, true, i == proc.currentPresetAtomic.load());
-        m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&presetBtn), [this] (int r) { if (r > 0) { proc.applyPreset (r - 1); refreshPreset(); } });
+        juce::Component::SafePointer<VoxEditor> safe (this);
+        m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&presetBtn), [safe] (int r) { if (safe != nullptr && r > 0) { safe->proc.applyPreset (r - 1); safe->refreshPreset(); } });
     };
     root.addChildComponent (doneBtn);
     doneBtn.setToggleState (true, juce::dontSendNotification);
@@ -703,12 +715,15 @@ void VoxEditor::Root::paint (juce::Graphics& g)
         juce::ColourGradient lg (juce::Colours::white, 0, 6, juce::Colour (0xffd9e6f4), 0, 34, false);
         lg.addColour (0.48, juce::Colour (0xff7e8da2)); lg.addColour (0.52, juce::Colour (0xff18243a)); lg.addColour (0.7, juce::Colour (0xff5f7594));
         {
-            static const juce::Image logo = juce::ImageCache::getFromMemory (BinaryData::Logo_png, BinaryData::Logo_pngSize);
-            const juce::Rectangle<float> lr (9, 4, 32, 32);
-            g.setColour (navy.withAlpha (0.85f));
-            g.drawImage (logo, lr.translated (0, 1.4f), juce::RectanglePlacement::centred, true);
-            g.setGradientFill (lg);
-            g.drawImage (logo, lr, juce::RectanglePlacement::centred, true);
+            const juce::Image logo = gAssets != nullptr ? gAssets->logo : juce::Image();
+            if (logo.isValid())
+            {
+                const juce::Rectangle<float> lr (9, 4, 32, 32);
+                g.setColour (navy.withAlpha (0.85f));
+                g.drawImage (logo, lr.translated (0, 1.4f), juce::RectanglePlacement::centred, true);
+                g.setGradientFill (lg);
+                g.drawImage (logo, lr, juce::RectanglePlacement::centred, true);
+            }
         }
         juce::GlyphArrangement ga; ga.addLineOfText (disp (24.0f), "VOX", 48, 30);
         juce::GlyphArrangement gb; gb.addLineOfText (disp (24.0f), "WARP", 48 + ga.getBoundingBox (0, -1, true).getWidth() + 2, 30);

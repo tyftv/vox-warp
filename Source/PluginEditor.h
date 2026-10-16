@@ -6,6 +6,12 @@
 
 namespace ui
 {
+struct Assets
+{
+    Assets(); ~Assets();
+    juce::Typeface::Ptr disp, bold;
+    juce::Image logo;
+};
 juce::Font disp (float h);   // Michroma
 juce::Font bold (float h);   // Chakra Petch Bold
 juce::Font mono (float h);
@@ -118,6 +124,8 @@ private:
     void timerCallback() override;
     void setLinkMode (int m);
     void refreshPreset();
+
+    juce::SharedResourcePointer<ui::Assets> assets;   // first member: built before, released after everything that draws
 
     struct Root : juce::Component
     {
