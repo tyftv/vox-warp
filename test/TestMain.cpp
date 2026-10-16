@@ -41,7 +41,8 @@ int main()
     ed->setSize (VoxEditor::W, VoxEditor::H);
     auto* ve = dynamic_cast<VoxEditor*> (ed.get());
     juce::Thread::sleep (1);
-    for (int f = 0; f < 150; ++f) { run (180 + 40 * std::sin (f * 0.1), 1.0 / 60); for (int c = 0; c < 2; ++c) b.applyGain (c, 0, bs, (f % 20) < 10 ? 1.0f : 0.0f); juce::Thread::sleep (16); ve->tickForTest(); }
+    for (int f = 0; f < 150; ++f) { run (180 + 40 * std::sin (f * 0.1), 1.0 / 60); for (int c = 0; c < 2; ++c) b.applyGain (c, 0, bs, (f % 20) < 10 ? 1.0f : 0.0f); juce::Thread::sleep (16); ve->tickForTest();
+        if (f % 12 == 11) { auto im = ed->createComponentSnapshot ({ 394, 46, 312, 312 }, true, 1.0f); juce::File fo ("/tmp/claude-0/fr" + juce::String (f / 12) + ".png"); fo.deleteFile(); juce::FileOutputStream os2 (fo); juce::PNGImageFormat().writeImageToStream (im, os2); } }
     juce::ignoreUnused (ve);
     auto snap = [&] (const char* path) { auto im = ed->createComponentSnapshot (ed->getLocalBounds(), true, 1.0f); juce::File f (path); f.deleteFile(); juce::FileOutputStream os (f); juce::PNGImageFormat().writeImageToStream (im, os); };
     snap ("/tmp/claude-0/editor.png");

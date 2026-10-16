@@ -39,33 +39,60 @@ public:
 
     void step (float dt, const Forces& F, const float* bands, int NB)
     {
-        const float dt2 = dt * dt;
+        const float dt2 = dt * dt, h2 = h * h;
+        if ((int) rhoP.size() != N) rhoP.assign ((size_t) N, rho0);
         float bmean = 0; for (int b = 0; b < NB; ++b) bmean += bands[b]; bmean /= (float) juce::jmax (1, NB);
+        // centre of mass: spikes and splashes work relative to the liquid itself, not the dome centre
+        float cxm = 0, cym = 0; for (int i = 0; i < N; ++i) { cxm += x[(size_t) i]; cym += y[(size_t) i]; }
+        cxm /= (float) juce::jmax (1, N); cym /= (float) juce::jmax (1, N);
+        comX = cxm; comY = cym;
         for (int i = 0; i < N; ++i)
         {
+            // gravity toward the dome centre: a smooth spring near the middle, constant further out (never hollows the middle)
             const float r = std::hypot (x[(size_t) i], y[(size_t) i]) + 1e-6f, ux = x[(size_t) i] / r, uy = y[(size_t) i] / r;
             float ax = F.gx, ay = F.gy;
-            const float m = F.mag * std::min (1.0f, r * 3); ax -= ux * m; ay -= uy * m;
-            if (F.spike > 0 && r > 0.12f)
+            const float m = F.mag * std::min (1.0f, r * 2.5f); ax -= ux * m; ay -= uy * m;
+            // ferrofluid spikes: only surface particles, pointing away from the liquid's own centre
+            const float surf = juce::jlimit (0.0f, 1.0f, (rho0 * 0.85f - rhoP[(size_t) i]) / (rho0 * 0.45f));
+            if (F.spike > 0 && surf > 0)
             {
-                float a = std::atan2 (uy, ux) / 6.2831853f; if (a < 0) a += 1;
+                const float dx = x[(size_t) i] - cxm, dy = y[(size_t) i] - cym, rr = std::hypot (dx, dy) + 1e-6f;
+                float a = std::atan2 (dy, dx) / 6.2831853f; if (a < 0) a += 1;
                 const float mb = a < 0.5f ? a * 2 : 2 - a * 2;
                 const float e = juce::jlimit (0.0f, 1.0f, (bands[std::min (NB - 1, (int) (mb * NB))] - bmean) * 2.5f + 0.15f);
-                const float pp = e * e * F.spike; ax += ux * pp; ay += uy * pp;
+                const float pp = e * e * F.spike * surf; ax += dx / rr * pp; ay += dy / rr * pp;
             }
-            if (F.swirl != 0) { ax += -uy * F.swirl; ay += ux * F.swirl; }
+            if (F.swirl != 0) { ax += -(y[(size_t) i] - cym) * F.swirl * 2; ay += (x[(size_t) i] - cxm) * F.swirl * 2; }
             if (F.noise > 0) { ax += (uni (rng) - 0.5f) * F.noise; ay += (uni (rng) - 0.5f) * F.noise; }
             vx[(size_t) i] = (vx[(size_t) i] + ax * dt) * F.damp; vy[(size_t) i] = (vy[(size_t) i] + ay * dt) * F.damp;
+        }
+        // viscosity (Clavet et al.): neighbours that move apart drag on each other -> gooey, coherent liquid
+        buildGrid();
+        for (int i = 0; i < N; ++i)
+        {
+            const float xi = x[(size_t) i], yi = y[(size_t) i]; const int cx = cellX (xi), cy = cellX (yi);
+            for (int oy = -1; oy <= 1; ++oy) { const int yy = cy + oy; if (yy < 0 || yy >= nc) continue;
+                for (int ox = -1; ox <= 1; ++ox) { const int xx = cx + ox; if (xx < 0 || xx >= nc) continue;
+                    for (int j = head[(size_t) (yy * nc + xx)]; j >= 0; j = next[(size_t) j]) { if (j <= i) continue;
+                        const float dx = x[(size_t) j] - xi, dy = y[(size_t) j] - yi, r2 = dx * dx + dy * dy;
+                        if (r2 < h2 && r2 > 1e-12f)
+                        {
+                            const float r = std::sqrt (r2), q = 1 - r / h, nx = dx / r, ny = dy / r;
+                            const float u = (vx[(size_t) i] - vx[(size_t) j]) * nx + (vy[(size_t) i] - vy[(size_t) j]) * ny;
+                            if (u > 0)
+                            {
+                                const float I = std::min (u * 0.5f, dt * q * (visc * u + viscQ * u * u)) * 0.5f;
+                                vx[(size_t) i] -= I * nx; vy[(size_t) i] -= I * ny; vx[(size_t) j] += I * nx; vy[(size_t) j] += I * ny;
+                            }
+                        } } } }
+        }
+        for (int i = 0; i < N; ++i)
+        {
             px[(size_t) i] = x[(size_t) i]; py[(size_t) i] = y[(size_t) i];
             x[(size_t) i] += vx[(size_t) i] * dt; y[(size_t) i] += vy[(size_t) i] * dt;
         }
-        std::fill (head.begin(), head.end(), -1);
-        for (int i = 0; i < N; ++i)
-        {
-            const int c = cellOf (x[(size_t) i], y[(size_t) i]);
-            next[(size_t) i] = head[(size_t) c]; head[(size_t) c] = i;
-        }
-        const float h2 = h * h;
+        // double-density relaxation (pressure + surface tension)
+        buildGrid();
         for (int i = 0; i < N; ++i)
         {
             const float xi = x[(size_t) i], yi = y[(size_t) i];
@@ -76,6 +103,7 @@ public:
                     for (int j = head[(size_t) (yy * nc + xx)]; j >= 0; j = next[(size_t) j]) { if (j == i) continue;
                         const float dx = x[(size_t) j] - xi, dy = y[(size_t) j] - yi, r2 = dx * dx + dy * dy;
                         if (r2 < h2) { const float q = 1 - std::sqrt (r2) / h; rho += q * q; rhon += q * q * q; } } } }
+            rhoP[(size_t) i] = rho;
             const float P = k * (rho - rho0), Pn = kn * rhon; float mx = 0, my = 0;
             for (int oy = -1; oy <= 1; ++oy) { const int yy = cy + oy; if (yy < 0 || yy >= nc) continue;
                 for (int ox = -1; ox <= 1; ++ox) { const int xx = cx + ox; if (xx < 0 || xx >= nc) continue;
@@ -96,13 +124,20 @@ public:
         }
     }
 
+    // A splash: fling a lobe of the liquid out to one side. The far side of the blob gets the
+    // strongest push, so it stretches into a teardrop and pinches off droplets instead of hollowing out.
     void kick (float amt)
     {
+        const float th = uni (rng) * 6.2831853f, dx0 = std::cos (th), dy0 = std::sin (th);
+        float ext = 1e-3f;
+        for (int i = 0; i < N; ++i) ext = std::max (ext, (x[(size_t) i] - comX) * dx0 + (y[(size_t) i] - comY) * dy0);
         for (int i = 0; i < N; ++i)
         {
-            const float r = std::hypot (x[(size_t) i], y[(size_t) i]) + 1e-3f, kk = amt * (0.8f + uni (rng) * 1.6f);
-            vx[(size_t) i] += x[(size_t) i] / r * kk + (uni (rng) - 0.5f) * amt;
-            vy[(size_t) i] += y[(size_t) i] / r * kk + (uni (rng) - 0.5f) * amt;
+            const float pr = ((x[(size_t) i] - comX) * dx0 + (y[(size_t) i] - comY) * dy0) / ext;   // -1..1 along the splash
+            const float w = pr > 0 ? pr * pr * (1.2f + uni (rng) * 0.8f) : pr * 0.25f;
+            const float side = ((x[(size_t) i] - comX) * -dy0 + (y[(size_t) i] - comY) * dx0) * 0.6f;
+            vx[(size_t) i] += dx0 * w * amt * 4.0f - dy0 * side * amt * 0.6f + (uni (rng) - 0.5f) * amt * 0.3f;
+            vy[(size_t) i] += dy0 * w * amt * 4.0f + dx0 * side * amt * 0.6f + (uni (rng) - 0.5f) * amt * 0.3f;
         }
     }
 
@@ -150,7 +185,7 @@ public:
                 const float u = (px0 + 0.5f) / G * 2 - 1, r = std::sqrt (u * u + w * w);
                 const float rip = std::sin (u * 11 + time * 2.3f) * std::sin (w * 9 - time * 1.9f) * 0.6f
                                 + std::sin ((u * 0.7f - w) * 17 + time * 3.1f) * 0.3f
-                                + std::sin (r * 24 - time * 7.0f) * std::exp (-r * 2.2f) * std::min (1.5f, energy) * 0.5f;
+                                + std::sin ((u + w * 0.4f) * 23 - time * 5.0f) * std::min (1.5f, energy) * 0.25f;
                 hgt[(size_t) i] = hh + rip * amp * std::min (1.0f, d / (Dm * 0.6f));
             }
         }
@@ -246,6 +281,7 @@ private:
     std::vector<float> x, y, vx, vy, px, py, field, tmp, hgt, dist;
     float hueR = .2f, hueG = .4f, hueB = 1, hue2R = .8f, hue2G = .3f, hue2B = 1;
     std::vector<int> head, next;
+    std::vector<float> rhoP; float comX = 0, comY = 0, visc = 1.2f, viscQ = 0.3f;
     std::vector<float> lut = std::vector<float> (256 * 3, 0.0f); float lutHue = -100;
     std::mt19937 rng { 1234 }; std::uniform_real_distribution<float> uni { 0.0f, 1.0f };
 
@@ -270,6 +306,11 @@ private:
                 for (int y0 = 0; y0 < G; ++y0) { f[(size_t) (y0 * G + x0)] = acc * inv; acc += tmp[(size_t) (std::min (G - 1, y0 + r + 1) * G + x0)] - tmp[(size_t) (std::max (0, y0 - r) * G + x0)]; }
             }
         }
+    }
+    void buildGrid()
+    {
+        std::fill (head.begin(), head.end(), -1);
+        for (int i = 0; i < N; ++i) { const int c = cellOf (x[(size_t) i], y[(size_t) i]); next[(size_t) i] = head[(size_t) c]; head[(size_t) c] = i; }
     }
     int cellX (float v) const { int c = (int) std::floor ((v + 1.2f) / h); return c < 0 ? 0 : c >= nc ? nc - 1 : c; }
     int cellOf (float xx, float yy) const { return cellX (yy) * nc + cellX (xx); }

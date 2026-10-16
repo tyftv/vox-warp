@@ -359,8 +359,9 @@ void Visualizer::tick (float dt)
     const float dirG = E ("reverse") > 0.5f ? -1.0f : 1.0f;
     Liquid::Forces F;
     F.gx = std::sin (t * 1.6f) * E ("width") * 2.2f; F.gy = std::cos (t * 1.1f) * E ("width") * 1.2f;
-    F.mag = dirG * (running ? juce::jmax (3.0f, 6.5f - env * 2.2f) : 5 + 1.2f * std::sin (t * 0.8f));
-    F.spike = std::abs (F.mag) * (0.55f + E ("formant") * 0.5f) * (running ? 0.6f + juce::jmin (env, 1.6f) * 0.25f : 0.7f);
+    F.mag = (running ? juce::jmax (3.0f, 6.5f - env * 2.2f) : 5 + 1.2f * std::sin (t * 0.8f));
+    if (dirG < 0) { F.mag *= 0.35f; F.gx += std::cos (t * 0.45f) * 4.5f; F.gy += std::sin (t * 0.45f) * 4.5f; }   // REVERSE: slosh around the bowl instead of a ring
+    F.spike = 6.0f * (running ? 1.0f : 0.8f) * (0.55f + E ("formant") * 0.5f) * (running ? 0.6f + juce::jmin (env, 1.6f) * 0.25f : 0.7f);
     F.swirl = E ("fold") > 0.01f ? std::sin (t * 0.9f) * E ("fold") * 5 : 0;
     F.noise = E ("scatter") * 14; F.damp = 0.996f - E ("spray") * 0.003f;
     if (! running && uni (rng) < 0.006f) onset = 0.06f;
@@ -373,7 +374,7 @@ void Visualizer::tick (float dt)
         if (onset < 0.08f) kickArmed = true;
         if (kickArmed && kickCool <= 0 && onset > 0.25f)
         {
-            lq.kick (juce::jmin (0.55f, 0.2f + onset * 0.3f) * (1 + E ("spray") * 1.5f));
+            lq.kick (juce::jmin (0.85f, 0.25f + onset * 0.5f) * (1 + E ("spray") * 1.5f));
             kickArmed = false; kickCool = 0.12f;
         }
         const int sub = juce::jmax (2, (int) std::ceil (dt / (1.0f / 120.0f)));
