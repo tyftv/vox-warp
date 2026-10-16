@@ -407,9 +407,15 @@ void Visualizer::tick (float dt)
     std::swap (A, B);
 
     // liquid image
-    const int G = E ("decim") > 0.05f ? juce::jmax (36, (int) std::round (132 * (1 - E ("decim") * 0.75f))) : juce::jlimit (160, 300, (int) (full * 0.6f));
+    const int G = E ("decim") > 0.05f ? juce::jmax (36, (int) std::round (132 * (1 - E ("decim") * 0.75f))) : juce::jlimit (160, 240, (int) (full * 0.75f));
     if (! liq.isValid() || liq.getWidth() != G) liq = juce::Image (juce::Image::ARGB, G, G, true);
-    lq.render (liq, 195 + E ("formant") * 110, E ("throat"), E ("crush"), false);
+#if VW_DEBUG
+    const double t0 = juce::Time::getMillisecondCounterHiRes();
+#endif
+    lq.render (liq, 195 + E ("formant") * 110, E ("throat"), E ("crush"), t, env);
+#if VW_DEBUG
+    fprintf (stderr, "rendertime G=%d %.2f ms\n", G, juce::Time::getMillisecondCounterHiRes() - t0);
+#endif
 }
 
 void Visualizer::paint (juce::Graphics& g)

@@ -107,10 +107,12 @@ public:
     }
 
     // Render into an ARGB image of size G×G covering sim space [-1,1].
-    void render (juce::Image& img, float hue, float throat, float crush, bool lowRes)
+    // Shading: metaball height field -> normals (+ moving ripples) -> reflected studio environment,
+    // specular glints, soft back-rim, anti-aliased edge from the field's signed distance.
+    void render (juce::Image& img, float hue, float throat, float crush, float time, float energy)
     {
         const int G = img.getWidth();
-        if ((int) field.size() != G * G) { field.assign ((size_t) (G * G), 0); tmp = field; }
+        if ((int) field.size() != G * G) { field.assign ((size_t) (G * G), 0); tmp = field; hgt = field; }
         if (std::abs (hue - lutHue) > 2) buildLut (hue);
         std::fill (field.begin(), field.end(), 0.0f);
         const float rk = 0.072f * (0.85f + throat * 0.4f), rkc = rk * G / 2, irk = 1 / (rkc * rkc); const int R = (int) std::ceil (rkc);
@@ -122,38 +124,116 @@ public:
             for (int cy = y0; cy <= y1; ++cy) { const float dy = cy + 0.5f - gy; float* row = field.data() + cy * G;
                 for (int cx = x0; cx <= x1; ++cx) { const float dx = cx + 0.5f - gx, d2 = (dx * dx + dy * dy) * irk; if (d2 < 1) { const float w = 1 - d2; row[cx] += w * w; } } }
         }
-        const int passes = std::max (2, (int) std::round (G / 70.0));
-        for (int pass = 0; pass < passes; ++pass)
-        {
-            for (int py0 = 0; py0 < G; ++py0) { const int row = py0 * G; for (int px0 = 0; px0 < G; ++px0) { const int a = px0 > 0 ? px0 - 1 : 0, b = px0 < G - 1 ? px0 + 1 : G - 1; float s = 0; for (int q = a; q <= b; ++q) s += field[(size_t) (row + q)]; tmp[(size_t) (row + px0)] = s / (b - a + 1); } }
-            for (int px0 = 0; px0 < G; ++px0) for (int py0 = 0; py0 < G; ++py0) { const int a = py0 > 0 ? py0 - 1 : 0, b = py0 < G - 1 ? py0 + 1 : G - 1; float s = 0; for (int q = a; q <= b; ++q) s += tmp[(size_t) (q * G + px0)]; field[(size_t) (py0 * G + px0)] = s / (b - a + 1); }
-        }
-        const float T = 0.42f, ns = 7.0f * G / 132.0f, cap = T + 1.6f;
-        const int lv = crush > 0.04f ? std::max (2, (int) std::round (16 - crush * 14)) : 0; const float q = lv ? 255.0f / (lv - 1) : 0;
-        const float Lx = -0.42f, Ly = -0.62f, Lz = 0.66f;
-        auto cl = [&] (float u) { u = (u > cap ? cap : u) - T; return u > 0 ? std::sqrt (u) : 0.0f; };
-        juce::Image::BitmapData bd (img, juce::Image::BitmapData::writeOnly);
+        blur (field, std::max (1, (int) std::round (G / 90.0)), 2);
+
+        // height: distance-to-edge droplet profile (smooth by construction) + travelling ripples
+        const float T = 0.42f, INF = 1e6f;
+        if ((int) dist.size() != G * G) dist.assign ((size_t) (G * G), 0);
+        for (int i = 0; i < G * G; ++i) dist[(size_t) i] = field[(size_t) i] > T ? INF : 0;
+        const float D1 = 1.0f, D2 = 1.4142f;
+        for (int py0 = 1; py0 < G - 1; ++py0) for (int px0 = 1; px0 < G - 1; ++px0)
+        { float& d = dist[(size_t) (py0 * G + px0)]; if (d == 0) continue;
+          d = std::min ({ d, dist[(size_t) (py0 * G + px0 - 1)] + D1, dist[(size_t) ((py0 - 1) * G + px0)] + D1, dist[(size_t) ((py0 - 1) * G + px0 - 1)] + D2, dist[(size_t) ((py0 - 1) * G + px0 + 1)] + D2 }); }
+        for (int py0 = G - 2; py0 > 0; --py0) for (int px0 = G - 2; px0 > 0; --px0)
+        { float& d = dist[(size_t) (py0 * G + px0)]; if (d == 0) continue;
+          d = std::min ({ d, dist[(size_t) (py0 * G + px0 + 1)] + D1, dist[(size_t) ((py0 + 1) * G + px0)] + D1, dist[(size_t) ((py0 + 1) * G + px0 + 1)] + D2, dist[(size_t) ((py0 + 1) * G + px0 - 1)] + D2 }); }
+        const float Dm = G * 0.2f;
+        const float amp = (0.025f + std::min (1.5f, energy) * 0.07f) * Dm;
         for (int py0 = 0; py0 < G; ++py0)
         {
+            const float w = (py0 + 0.5f) / G * 2 - 1;
             for (int px0 = 0; px0 < G; ++px0)
             {
-                const int i = py0 * G + px0; const float v = field[(size_t) i];
-                if (v < T - 0.14f) { bd.setPixelColour (px0, py0, juce::Colours::transparentBlack); continue; }
-                const float gx = (px0 > 0 && px0 < G - 1) ? cl (field[(size_t) i + 1]) - cl (field[(size_t) i - 1]) : 0;
-                const float gy = (py0 > 0 && py0 < G - 1) ? cl (field[(size_t) (i + G)]) - cl (field[(size_t) (i - G)]) : 0;
-                float nx = -gx * ns, ny = -gy * ns, nz = 1; const float nl = 1 / std::sqrt (nx * nx + ny * ny + 1); nx *= nl; ny *= nl; nz *= nl;
-                float t = 0.47f + ny * 0.75f + ((float) py0 / G - 0.5f) * 0.22f; t = t < 0 ? 0 : t > 1 ? 1 : t;
-                const int li = (int) (t * 255);
-                const float sp = nx * Lx + ny * Ly + nz * Lz, spec = sp > 0.6f ? std::pow (sp, 18.0f) * 300 : 0, rim = (1 - nz) * 70;
-                float r = lut[(size_t) li * 3] + spec + rim * 0.3f, g = lut[(size_t) li * 3 + 1] + spec + rim * 0.6f, b = lut[(size_t) li * 3 + 2] + spec + rim;
-                if (lv) { r = std::round (r / q) * q; g = std::round (g / q) * q; b = std::round (b / q) * q; }
-                float a = (v - (T - 0.14f)) / 0.28f; a = a > 1 ? 1 : a; a = a * a * (3 - 2 * a);
-                bd.setPixelColour (px0, py0, juce::Colour::fromFloatRGBA (std::min (r, 255.0f) / 255, std::min (g, 255.0f) / 255, std::min (b, 255.0f) / 255, a));
+                const int i = py0 * G + px0; const float d = std::min (dist[(size_t) i], 1e5f);
+                if (d <= 0) { hgt[(size_t) i] = 0; continue; }
+                const float dd = std::min (d, Dm), hh = std::sqrt (dd * (2 * Dm - dd));
+                const float u = (px0 + 0.5f) / G * 2 - 1, r = std::sqrt (u * u + w * w);
+                const float rip = std::sin (u * 11 + time * 2.3f) * std::sin (w * 9 - time * 1.9f) * 0.6f
+                                + std::sin ((u * 0.7f - w) * 17 + time * 3.1f) * 0.3f
+                                + std::sin (r * 24 - time * 7.0f) * std::exp (-r * 2.2f) * std::min (1.5f, energy) * 0.5f;
+                hgt[(size_t) i] = hh + rip * amp * std::min (1.0f, d / (Dm * 0.6f));
             }
         }
-        juce::ignoreUnused (lowRes);
+        blur (hgt, std::max (2, (int) std::round (G / 40.0)), 2);
+
+        const int lv = crush > 0.04f ? std::max (2, (int) std::round (16 - crush * 14)) : 0; const float q = lv ? 1.0f / (lv - 1) : 0;
+        const float ns = 0.5f;
+        const float envShift = std::sin (time * 0.23f) * 0.25f;
+        auto sstep = [] (float e0, float e1, float xx) { float t = (xx - e0) / (e1 - e0); t = t < 0 ? 0 : t > 1 ? 1 : t; return t * t * (3 - 2 * t); };
+        const float L1x = -0.45f, L1y = -0.68f, L1z = 0.58f, L2x = 0.62f, L2y = 0.28f, L2z = 0.73f;
+        int bx0 = G, bx1 = -1, by0 = G, by1 = -1;
+        for (int py0 = 0; py0 < G; ++py0) for (int px0 = 0; px0 < G; ++px0)
+            if (field[(size_t) (py0 * G + px0)] > T * 0.8f) { bx0 = std::min (bx0, px0); bx1 = std::max (bx1, px0); by0 = std::min (by0, py0); by1 = std::max (by1, py0); }
+        img.clear (img.getBounds());
+        if (bx1 < 0) return;
+        bx0 = std::max (1, bx0 - 2); by0 = std::max (1, by0 - 2); bx1 = std::min (G - 2, bx1 + 2); by1 = std::min (G - 2, by1 + 2);
+        juce::Image::BitmapData bd (img, juce::Image::BitmapData::writeOnly);
+        for (int py0 = by0; py0 <= by1; ++py0)
+        {
+            for (int px0 = bx0; px0 <= bx1; ++px0)
+            {
+                const int i = py0 * G + px0; const float v = field[(size_t) i];
+                // anti-aliased coverage from the signed distance to the iso-line, in pixels
+                float a = 0;
+                if (px0 > 0 && px0 < G - 1 && py0 > 0 && py0 < G - 1)
+                {
+                    const float fx = (field[(size_t) i + 1] - field[(size_t) i - 1]) * 0.5f, fy = (field[(size_t) (i + G)] - field[(size_t) (i - G)]) * 0.5f;
+                    const float gm = std::max (1e-4f, std::sqrt (fx * fx + fy * fy));
+                    a = juce::jlimit (0.0f, 1.0f, (v - T) / gm * 0.9f + 0.5f);
+                }
+                if (a <= 0.0f) { bd.setPixelColour (px0, py0, juce::Colours::transparentBlack); continue; }
+
+                float nx = 0, ny = 0;
+                if (px0 > 0 && px0 < G - 1 && py0 > 0 && py0 < G - 1)
+                { nx = -(hgt[(size_t) i + 1] - hgt[(size_t) i - 1]) * ns; ny = -(hgt[(size_t) (i + G)] - hgt[(size_t) (i - G)]) * ns; }
+                // at the rim, bend the normal outward so the edge curves away like a droplet
+                const float edge = 1 - sstep (0.0f, 0.12f, v - T);
+                if (edge > 0)
+                {
+                    const float fx = field[(size_t) std::min (i + 1, G * G - 1)] - field[(size_t) std::max (i - 1, 0)];
+                    const float fy = field[(size_t) std::min (i + G, G * G - 1)] - field[(size_t) std::max (i - G, 0)];
+                    const float gm = std::max (1e-4f, std::sqrt (fx * fx + fy * fy));
+                    nx += -fx / gm * edge * 1.2f; ny += -fy / gm * edge * 1.2f;
+                }
+                float nz = 1; { const float nl = 1 / std::sqrt (nx * nx + ny * ny + nz * nz); nx *= nl; ny *= nl; nz *= nl; }
+
+                // reflect the view ray (0,0,1) and look up the studio environment
+                const float rx = 2 * nz * nx, ry = 2 * nz * ny, rz = 2 * nz * nz - 1;
+                const float e = -ry;                       // elevation (up = +)
+                float cr, cg, cb;
+                {
+                    const float sk = sstep (0.0f, 0.85f, e);
+                    const float sr = 0.42f + 0.58f * sk, sg = 0.5f + 0.5f * sk, sb = 0.64f + 0.36f * sk;
+                    const float gd = sstep (0.0f, -0.9f, e);
+                    const float gr = hueR * (0.95f - 0.7f * gd), gg = hueG * (0.95f - 0.7f * gd), gb = hueB * (0.95f - 0.7f * gd);
+                    const float up = sstep (-0.22f, 0.3f, e);
+                    cr = gr + (sr - gr) * up; cg = gg + (sg - gg) * up; cb = gb + (sb - gb) * up;
+                    const float hz = std::exp (-((e + 0.04f) * (e + 0.04f)) / (0.05f * 0.05f)) * 0.45f;           // dark horizon line
+                    cr += (0.03f - cr) * hz; cg += (0.05f - cg) * hz; cb += (0.10f - cb) * hz;
+                    const float az = rx + envShift;
+                    const float box1 = sstep (0.2f, 0.06f, std::abs (az - 0.42f)) * sstep (-0.05f, 0.3f, e) * 0.8f;   // softbox reflections
+                    const float box2 = sstep (0.1f, 0.03f, std::abs (az + 0.58f)) * sstep (0.1f, 0.4f, e) * 0.55f;
+                    cr += box1 + box2; cg += box1 + box2; cb += box1 + box2;
+                    const float back = sstep (-0.15f, -0.65f, rz);                                // rays heading away: dark dome
+                    cr += (0.02f + hueR * 0.12f - cr) * back; cg += (0.03f + hueG * 0.12f - cg) * back; cb += (0.06f + hueB * 0.18f - cb) * back;
+                }
+                // metal tint + specular glints + soft coloured back-rim
+                auto spec = [&] (float lx, float ly, float lz)
+                {
+                    float hx = lx, hy = ly, hz = lz + 1; const float hl = 1 / std::sqrt (hx * hx + hy * hy + hz * hz); hx *= hl; hy *= hl; hz *= hl;
+                    float d = std::max (0.0f, nx * hx + ny * hy + nz * hz);
+                    const float d2 = d * d, d4 = d2 * d2, d8 = d4 * d4, d16 = d8 * d8, d32 = d16 * d16, d64 = d32 * d32;
+                    return d64 * d64 * 1.4f + d32 * 0.18f;
+                };
+                const float s1 = spec (L1x, L1y, L1z), s2 = spec (L2x, L2y, L2z) * 0.45f;
+                const float rim = std::pow (1 - nz, 3.0f) * 0.35f;
+                float r = cr * 0.94f + s1 + s2 + rim * hue2R, g = cg * 0.95f + s1 + s2 + rim * hue2G, b = cb + s1 + s2 + rim * hue2B;
+                if (lv) { r = std::round (r / q) * q; g = std::round (g / q) * q; b = std::round (b / q) * q; }
+                bd.setPixelColour (px0, py0, juce::Colour::fromFloatRGBA (std::min (r, 1.0f), std::min (g, 1.0f), std::min (b, 1.0f), a));
+            }
+        }
 #if VW_DEBUG
-        { float mx=0; for (auto v: field) mx=std::max(mx,v); float sx=0; for(int i=0;i<N;++i) sx+=std::abs(x[(size_t)i]); float sr=0; for(int i=0;i<N;++i) sr+=std::hypot(x[(size_t)i],y[(size_t)i]); fprintf(stderr,"render meanR=%f\n",sr/std::max(1,N)); }
+        { float sr=0; for(int i=0;i<N;++i) sr+=std::hypot(x[(size_t)i],y[(size_t)i]); fprintf(stderr,"render meanR=%f\n",sr/std::max(1,N)); }
 #endif
     }
 
@@ -162,11 +242,34 @@ public:
 private:
     int N = 0, nc = 0;
     float h = 0.12f, d = 0.045f, k = 60, kn = 150, Rb = 0.93f, rho0 = 1;
-    std::vector<float> x, y, vx, vy, px, py, field, tmp;
+    std::vector<float> x, y, vx, vy, px, py, field, tmp, hgt, dist;
+    float hueR = .2f, hueG = .4f, hueB = 1, hue2R = .8f, hue2G = .3f, hue2B = 1;
     std::vector<int> head, next;
     std::vector<float> lut = std::vector<float> (256 * 3, 0.0f); float lutHue = -100;
     std::mt19937 rng { 1234 }; std::uniform_real_distribution<float> uni { 0.0f, 1.0f };
 
+    // separable running-sum box blur (radius r), repeated `iters` times ~ gaussian; cost independent of r
+    void blur (std::vector<float>& f, int r, int iters = 2)
+    {
+        const int G = (int) std::lround (std::sqrt ((double) f.size()));
+        if (r < 1) return;
+        const float inv = 1.0f / (2 * r + 1);
+        for (int it = 0; it < iters; ++it)
+        {
+            for (int y0 = 0; y0 < G; ++y0)
+            {
+                const float* src = f.data() + y0 * G; float* dst = tmp.data() + y0 * G; float acc = 0;
+                for (int k = -r; k <= r; ++k) acc += src[juce::jlimit (0, G - 1, k)];
+                for (int x0 = 0; x0 < G; ++x0) { dst[x0] = acc * inv; acc += src[std::min (G - 1, x0 + r + 1)] - src[std::max (0, x0 - r)]; }
+            }
+            for (int x0 = 0; x0 < G; ++x0)
+            {
+                float acc = 0;
+                for (int k = -r; k <= r; ++k) acc += tmp[(size_t) (juce::jlimit (0, G - 1, k) * G + x0)];
+                for (int y0 = 0; y0 < G; ++y0) { f[(size_t) (y0 * G + x0)] = acc * inv; acc += tmp[(size_t) (std::min (G - 1, y0 + r + 1) * G + x0)] - tmp[(size_t) (std::max (0, y0 - r) * G + x0)]; }
+            }
+        }
+    }
     int cellX (float v) const { int c = (int) std::floor ((v + 1.2f) / h); return c < 0 ? 0 : c >= nc ? nc - 1 : c; }
     int cellOf (float xx, float yy) const { return cellX (yy) * nc + cellX (xx); }
 
@@ -174,6 +277,8 @@ private:
     {
         lutHue = hue;
         const float hh = std::fmod (hue, 360.0f) / 360.0f;
+        { const auto c1 = juce::Colour::fromHSL (hh, 0.85f, 0.5f, 1.0f), c2 = juce::Colour::fromHSL (std::fmod (hh + 0.12f, 1.0f), 0.95f, 0.62f, 1.0f);
+          hueR = c1.getFloatRed(); hueG = c1.getFloatGreen(); hueB = c1.getFloatBlue(); hue2R = c2.getFloatRed(); hue2G = c2.getFloatGreen(); hue2B = c2.getFloatBlue(); }
         struct Stop { float t; juce::Colour c; };
         const Stop st[] { { 0, juce::Colours::white }, { .26f, juce::Colour::fromHSL (hh, .45f, .86f, 1) }, { .45f, juce::Colour (0xff5a6a84) }, { .52f, juce::Colour (0xff0a101b) },
                           { .64f, juce::Colour::fromHSL (hh, .85f, .40f, 1) }, { .86f, juce::Colour::fromHSL (hh, .60f, .78f, 1) }, { 1, juce::Colours::white } };
